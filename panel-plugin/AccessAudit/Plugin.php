@@ -6,6 +6,7 @@ use App\Services\Plugin\AbstractPlugin;
 use Illuminate\Console\Scheduling\Schedule;
 use Plugin\AccessAudit\Models\AuditAccessLog;
 use Plugin\AccessAudit\Models\AuditReport;
+use Plugin\AccessAudit\Services\AuditProcessor;
 use Plugin\AccessAudit\Services\NodeHealthMonitor;
 
 class Plugin extends AbstractPlugin
@@ -27,7 +28,9 @@ class Plugin extends AbstractPlugin
 
     public function update(string $oldVersion, string $newVersion): void
     {
-        // 预留
+        // 配置结构变化后清掉进程内缓存，避免长驻进程（queue worker 等）
+        // 继续用旧配置
+        AuditProcessor::flushConfigCache();
     }
 
     public function schedule(Schedule $schedule): void

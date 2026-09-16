@@ -7,6 +7,7 @@ use App\Services\Plugin\PluginConfigService;
 use App\Services\TelegramService;
 use Illuminate\Support\Facades\Log;
 use Plugin\AccessAudit\Models\AuditNodeStatus;
+use Plugin\AccessAudit\Models\AuditReport;
 
 /**
  * 节点级异常监控：
@@ -14,6 +15,11 @@ use Plugin\AccessAudit\Models\AuditNodeStatus;
  *  2. 命中突增告警：最近窗口内命中数同比上一窗口增长超过 X%
  *
  * 由 Plugin::schedule() 每分钟调用一次。
+ *
+ * 性能约定（重要）：
+ *   节点数可达上百，禁止「每节点 N 次 COUNT(*)」的写法。
+ *   所有节点的窗口计数用【一条 GROUP BY 查询】取回后内存比对，
+ *   配合 NodeHealthMonitor 的每分钟调度，SQL 次数从 O(节点数×2) 降为 O(1)。
  */
 class NodeHealthMonitor
 {
@@ -44,13 +50,50 @@ class NodeHealthMonitor
 
         $now = time();
         $nodes = AuditNodeStatus::query()->get();
+        if ($nodes->isEmpty()) {
+            return;
+        }
+
+        // 一次性取回所有节点在「本窗口 / 上一窗口」的命中数，避免逐节点 COUNT(*)
+        $spike = $this->cfg['spike_enabled'] ? $this->prefetchSpikeCounts($now) : [null, null];
 
         foreach ($nodes as $node) {
             $this->checkOffline($node, $now);
             if ($this->cfg['spike_enabled']) {
-                $this->checkSpike($node, $now);
+                $this->checkSpike($node, $now, $spike[0][$node->node_id] ?? 0, $spike[1][$node->node_id] ?? 0);
             }
         }
+    }
+
+    /**
+     * 一条 GROUP BY 取回全部节点的命中计数。
+     *
+     * @return array{0: array<int,int>, 1: array<int,int>} [当前窗口, 上一窗口]，key 为 node_id
+     */
+    private function prefetchSpikeCounts(int $now): array
+    {
+        $windowSec = $this->cfg['spike_window'] * 60;
+        $curStart = $now - $windowSec;
+        $prevStart = $now - $windowSec * 2;
+
+        $rows = AuditReport::query()
+            ->selectRaw(
+                'node_id,'
+                . ' SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS cur_cnt,'
+                . ' SUM(CASE WHEN created_at <  ? THEN 1 ELSE 0 END) AS prev_cnt',
+                [$curStart, $curStart]
+            )
+            ->where('created_at', '>=', $prevStart)
+            ->groupBy('node_id')
+            ->get();
+
+        $cur = [];
+        $prev = [];
+        foreach ($rows as $r) {
+            $cur[(int) $r->node_id] = (int) $r->cur_cnt;
+            $prev[(int) $r->node_id] = (int) $r->prev_cnt;
+        }
+        return [$cur, $prev];
     }
 
     /**
@@ -83,31 +126,20 @@ class NodeHealthMonitor
 
     /**
      * 命中突增：当前窗口命中数 vs 上一窗口，增长超阈值且当前窗口达到最小命中数
+     *
+     * @param int $cur  当前窗口命中数（预取）
+     * @param int $prev 上一窗口命中数（预取）
      */
-    private function checkSpike(AuditNodeStatus $node, int $now): void
+    private function checkSpike(AuditNodeStatus $node, int $now, int $cur, int $prev): void
     {
         if ($now - (int) $node->spike_alert_at < $this->cfg['spike_cooldown']) {
             return;
         }
-
-        $windowSec = $this->cfg['spike_window'] * 60;
-        $curStart = $now - $windowSec;
-        $prevStart = $now - $windowSec * 2;
-
-        $cur = \Plugin\AccessAudit\Models\AuditReport::query()
-            ->where('node_id', $node->node_id)
-            ->where('created_at', '>=', $curStart)
-            ->count();
-        $prev = \Plugin\AccessAudit\Models\AuditReport::query()
-            ->where('node_id', $node->node_id)
-            ->whereBetween('created_at', [$prevStart, $curStart - 1])
-            ->count();
-
         if ($cur < $this->cfg['spike_min_hits']) {
             return;
         }
         // 上一窗口为 0 时，当前窗口 >= min_hits 即视为突增
-        $growth = $prev > 0 ? (($cur - $prev) / $prev) * 100 : ($cur >= $this->cfg['spike_min_hits'] ? PHP_INT_MAX : 0);
+        $growth = $prev > 0 ? (($cur - $prev) / $prev) * 100 : PHP_INT_MAX;
         if ($growth < $this->cfg['spike_growth_pct']) {
             return;
         }

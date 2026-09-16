@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cedar2025/xboard-node/internal/nlog"
@@ -41,6 +42,14 @@ const (
 	// rule hits), so it gets larger defaults.
 	reportAllBatchMax = 200
 	reportAllQueueCap = 50000
+
+	// maxBatchesPerFlush caps how many POSTs a single flush tick may send.
+	// Together with BatchMax and FlushInterval it bounds panel load at
+	// BatchMax*maxBatchesPerFlush/FlushInterval events per second per node.
+	maxBatchesPerFlush = 10
+	// flushBudget bounds wall-clock time spent inside one flush tick so the
+	// ticker never drifts into the next interval.
+	flushBudget = 12 * time.Second
 )
 
 // Config mirrors the `audit:` section of config.yml.
@@ -89,6 +98,18 @@ type Event struct {
 	Matched  bool   `json:"matched"` // 是否命中审计规则（report_all 模式下区分全量/命中）
 }
 
+// Stats exposes drop/backlog counters for observability.
+//
+// Dropped is the number of events discarded because the queue was full or a
+// failed batch could not be requeued. It must never grow silently: a non-zero
+// value means the panel is slower than the node's event rate.
+type Stats struct {
+	Dropped  uint64
+	Reported uint64
+	Failed   uint64
+	Queued   int
+}
+
 // Reporter pulls rules, matches connection targets and batches reports.
 // Safe for concurrent use. A nil *Reporter is valid and disabled.
 type Reporter struct {
@@ -100,6 +121,13 @@ type Reporter struct {
 	mu    sync.Mutex
 	rules []rule
 	queue []Event
+
+	// counters are atomics so Observe() stays lock-free for metrics reads.
+	dropped  atomic.Uint64
+	reported atomic.Uint64
+	failed   atomic.Uint64
+	// overflowLogged throttles the "queue full" warning to one log per minute.
+	lastDropWarn atomic.Int64
 }
 
 // resolveSizes applies defaults for batch/queue sizes.
@@ -150,12 +178,30 @@ func New(cfg Config, auth PanelAuth) *Reporter {
 	go r.loop()
 	nlog.Core().Info("audit reporter enabled",
 		"panel", r.auth.BaseURL, "node_id", auth.NodeID, "machine_id", auth.MachineID,
-		"report_all", cfg.ReportAll, "batch_max", cfg.BatchMax, "queue_cap", cfg.QueueCap)
+		"report_all", cfg.ReportAll, "batch_max", cfg.BatchMax, "queue_cap", cfg.QueueCap,
+		"flush_interval", cfg.FlushInterval, "max_send_rate",
+		fmt.Sprintf("%d events/%ds", cfg.BatchMax*maxBatchesPerFlush, cfg.FlushInterval))
 	return r
 }
 
 // Enabled reports whether the module is active.
 func (r *Reporter) Enabled() bool { return r != nil && r.http != nil }
+
+// Stats returns a snapshot of the reporter counters.
+func (r *Reporter) Stats() Stats {
+	if r == nil {
+		return Stats{}
+	}
+	r.mu.Lock()
+	queued := len(r.queue)
+	r.mu.Unlock()
+	return Stats{
+		Dropped:  r.dropped.Load(),
+		Reported: r.reported.Load(),
+		Failed:   r.failed.Load(),
+		Queued:   queued,
+	}
+}
 
 // Observe is called by the kernel for every routed connection.
 // report_all=false: only rule-matched targets are queued.
@@ -175,8 +221,22 @@ func (r *Reporter) Observe(userID int, target, sourceIP string) {
 	r.mu.Lock()
 	if len(r.queue) < r.cfg.QueueCap {
 		r.queue = append(r.queue, Event{UserID: userID, Target: target, SourceIP: sourceIP, Matched: matched})
+		r.mu.Unlock()
+		return
 	}
+	// Queue full: drop the event, but never silently — a noisy panel must be
+	// visible in the logs and in Stats().Dropped.
+	queued := len(r.queue)
 	r.mu.Unlock()
+
+	dropped := r.dropped.Add(1)
+	now := time.Now().Unix()
+	if last := r.lastDropWarn.Load(); now-last >= 60 &&
+		r.lastDropWarn.CompareAndSwap(last, now) {
+		nlog.Core().Warn("audit: queue full, dropping events",
+			"queue_cap", r.cfg.QueueCap, "queued", queued,
+			"dropped_total", dropped, "report_all", r.cfg.ReportAll)
+	}
 }
 
 // loop periodically refreshes rules and flushes the queue.
@@ -191,7 +251,7 @@ func (r *Reporter) loop() {
 		case <-refresh.C:
 			r.refreshRules()
 		case <-flush.C:
-			r.flush()
+			r.flushAll()
 		}
 	}
 }
@@ -315,13 +375,44 @@ func ipInCIDR(ip, cidr string) bool {
 	return network.Contains(parsed)
 }
 
-// flush posts up to BatchMax queued events; on failure the batch is
-// requeued (bounded by QueueCap).
-func (r *Reporter) flush() {
+// flushAll drains the queue with repeated batches until it is empty, the
+// send budget is exhausted, or a batch fails.
+//
+// Why not a single batch per tick: with report_all the incoming rate can far
+// exceed BatchMax/FlushInterval, so a one-shot flush guarantees an ever-growing
+// backlog that eventually overflows QueueCap. Draining in a bounded loop keeps
+// the backlog bounded on the node side and — because each POST carries up to
+// BatchMax events — still bounds the panel-side request rate.
+func (r *Reporter) flushAll() {
+	deadline := time.Now().Add(flushBudget)
+	for i := 0; i < maxBatchesPerFlush; i++ {
+		if time.Now().After(deadline) {
+			return
+		}
+		if !r.flushOnce() {
+			// Empty queue, or a failure that already requeued the batch.
+			return
+		}
+	}
+	// Budget hit while events remain: report the residual backlog so the
+	// operator can raise maxBatchesPerFlush / lower flush_interval.
+	r.mu.Lock()
+	backlog := len(r.queue)
+	r.mu.Unlock()
+	if backlog > 0 {
+		nlog.Core().Warn("audit: flush budget exhausted with backlog",
+			"backlog", backlog, "queue_cap", r.cfg.QueueCap,
+			"batches_sent", maxBatchesPerFlush)
+	}
+}
+
+// flushOnce posts up to BatchMax queued events.
+// Returns true when a batch was successfully delivered.
+func (r *Reporter) flushOnce() bool {
 	r.mu.Lock()
 	if len(r.queue) == 0 {
 		r.mu.Unlock()
-		return
+		return false
 	}
 	batch := r.queue
 	if len(batch) > r.cfg.BatchMax {
@@ -339,7 +430,8 @@ func (r *Reporter) flush() {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		r.auth.BaseURL+reportPath, bytes.NewReader(body))
 	if err != nil {
-		return
+		r.requeue(batch)
+		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -351,18 +443,53 @@ func (r *Reporter) flush() {
 			io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
 		}
+		r.failed.Add(1)
 		nlog.Core().Warn("audit: report failed, requeue",
 			"error", err, "status", status, "events", len(batch))
-		r.mu.Lock()
-		if len(r.queue)+len(batch) <= r.cfg.QueueCap {
-			r.queue = append(batch, r.queue...)
-		}
-		r.mu.Unlock()
-		return
+		r.requeue(batch)
+		return false
 	}
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
+	r.reported.Add(uint64(len(batch)))
 	nlog.Core().Debug("audit: reported", "events", len(batch))
+	return true
+}
+
+// requeue puts a failed batch back at the head of the queue. If the queue
+// cannot take it all, the overflow is dropped with an explicit counter bump —
+// never silently.
+func (r *Reporter) requeue(batch []Event) {
+	r.mu.Lock()
+	room := r.cfg.QueueCap - len(r.queue)
+	if room <= 0 {
+		r.mu.Unlock()
+		r.recordDrop(len(batch), "queue full on requeue")
+		return
+	}
+	if room >= len(batch) {
+		r.queue = append(batch, r.queue...)
+		r.mu.Unlock()
+		return
+	}
+	// Keep the newest events (tail of the batch) — they are more actionable.
+	dropped := len(batch) - room
+	r.queue = append(batch[dropped:], r.queue...)
+	r.mu.Unlock()
+	r.recordDrop(dropped, "partial requeue overflow")
+}
+
+func (r *Reporter) recordDrop(n int, reason string) {
+	if n <= 0 {
+		return
+	}
+	total := r.dropped.Add(uint64(n))
+	now := time.Now().Unix()
+	if last := r.lastDropWarn.Load(); now-last >= 60 &&
+		r.lastDropWarn.CompareAndSwap(last, now) {
+		nlog.Core().Warn("audit: dropping events",
+			"count", n, "reason", reason, "dropped_total", total)
+	}
 }
 
 // String implements fmt.Stringer without leaking the token.
@@ -370,6 +497,7 @@ func (r *Reporter) String() string {
 	if !r.Enabled() {
 		return "audit: disabled"
 	}
-	return fmt.Sprintf("audit: panel=%s node=%d queued=%d rules=%d",
-		r.auth.BaseURL, r.auth.NodeID, len(r.queue), len(r.rules))
+	s := r.Stats()
+	return fmt.Sprintf("audit: panel=%s node=%d queued=%d rules=%d reported=%d dropped=%d failed=%d",
+		r.auth.BaseURL, r.auth.NodeID, s.Queued, len(r.rules), s.Reported, s.Dropped, s.Failed)
 }

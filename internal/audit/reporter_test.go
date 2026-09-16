@@ -310,3 +310,117 @@ func TestReporterRequeueOnFailure(t *testing.T) {
 		t.Fatal("expected queue drained after recovery")
 	}
 }
+
+// TestObserveDropsWhenQueueFull 回归：队列满时必须丢弃并计数，
+// 而不是静默丢弃——静默丢弃曾让 report_all 模式的背压完全不可见。
+func TestObserveDropsWhenQueueFull(t *testing.T) {
+	r := &Reporter{cfg: Config{Enabled: true, ReportAll: true, QueueCap: 3}}
+	r.http = &http.Client{}
+
+	for i := 0; i < 10; i++ {
+		r.Observe(i+1, "miss.example.org", "1.1.1.1")
+	}
+
+	r.mu.Lock()
+	queued := len(r.queue)
+	r.mu.Unlock()
+	if queued != 3 {
+		t.Fatalf("queued = %d, want 3 (QueueCap)", queued)
+	}
+	if got := r.Stats().Dropped; got != 7 {
+		t.Fatalf("Dropped = %d, want 7", got)
+	}
+}
+
+// TestFlushAllDrainsMultipleBatches 回归：一次 flush 必须连续发送多批，
+// 直到队列空。旧实现每个 tick 只发 BatchMax 条，report_all 下必然堆积到溢出。
+func TestFlushAllDrainsMultipleBatches(t *testing.T) {
+	var mu sync.Mutex
+	var batches []int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == rulesPath {
+			io.WriteString(w, `{"data":[]}`)
+			return
+		}
+		body, _ := io.ReadAll(req.Body)
+		var payload struct {
+			Events []Event `json:"events"`
+		}
+		json.Unmarshal(body, &payload)
+		mu.Lock()
+		batches = append(batches, len(payload.Events))
+		mu.Unlock()
+		io.WriteString(w, `{"data":{"received":0,"matched":0,"banned":0}}`)
+	}))
+	defer srv.Close()
+
+	r := New(Config{Enabled: true, ReportAll: true, BatchMax: 10, QueueCap: 1000, FlushInterval: 60, RulesRefresh: 60},
+		PanelAuth{BaseURL: srv.URL, Token: "t", NodeID: 1})
+	if !r.Enabled() {
+		t.Fatal("expected enabled")
+	}
+
+	for i := 0; i < 45; i++ {
+		r.Observe(i+1, "miss.example.org", "1.1.1.1")
+	}
+
+	r.flushAll()
+
+	mu.Lock()
+	defer mu.Unlock()
+	// 45 条 / 每批 10 条 → 5 批，最后一批 5 条
+	if len(batches) != 5 {
+		t.Fatalf("expected 5 batches, got %d: %v", len(batches), batches)
+	}
+	total := 0
+	for _, n := range batches {
+		total += n
+	}
+	if total != 45 {
+		t.Fatalf("expected 45 events delivered, got %d", total)
+	}
+	r.mu.Lock()
+	left := len(r.queue)
+	r.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("queue not drained, %d left", left)
+	}
+}
+
+// TestFlushAllStopsOnFailure 一批失败后必须立刻停止本 tick，
+// 否则会在面板故障时打出 maxBatchesPerFlush 次无意义的失败请求。
+func TestFlushAllStopsOnFailure(t *testing.T) {
+	var mu sync.Mutex
+	var posts int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == rulesPath {
+			io.WriteString(w, `{"data":[]}`)
+			return
+		}
+		mu.Lock()
+		posts++
+		mu.Unlock()
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	r := New(Config{Enabled: true, ReportAll: true, BatchMax: 10, QueueCap: 1000, FlushInterval: 60, RulesRefresh: 60},
+		PanelAuth{BaseURL: srv.URL, Token: "t", NodeID: 1})
+
+	for i := 0; i < 45; i++ {
+		r.Observe(i+1, "miss.example.org", "1.1.1.1")
+	}
+	r.flushAll()
+
+	mu.Lock()
+	got := posts
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("expected exactly 1 POST before bailing out, got %d", got)
+	}
+	if st := r.Stats(); st.Failed != 1 || st.Queued != 45 {
+		t.Fatalf("stats = %+v, want Failed=1 Queued=45", st)
+	}
+}

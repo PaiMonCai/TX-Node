@@ -42,6 +42,11 @@ type Config struct {
 	// via GET /api/v2/server/machine/nodes. When set, Panel.NodeID, Nodes
 	// and Panel.Token are ignored; the machine token is used instead.
 	Machine *MachineConfig `yaml:"machine,omitempty"`
+
+	// Audit (tx-node extension) enables the embedded access-audit reporter
+	// for the sing-box kernel. Reports reuse the panel credentials above —
+	// no separate token is needed. Omit to disable.
+	Audit AuditConfig `yaml:"audit,omitempty"`
 }
 
 // MachineConfig identifies this process as a panel-managed machine that
@@ -142,6 +147,22 @@ type KernelConfig struct {
 	// customization of dns, outbounds, endpoints, route, experimental, etc.
 	// Compatible with V2bX OriginalPath format.
 	CustomConfig string `yaml:"custom_config"`
+}
+
+// AuditConfig is the tx-node extension: embedded access-audit reporter for
+// the sing-box kernel. Disabled by default; omitting the section entirely
+// keeps the binary byte-for-byte behavior of stock xboard-node.
+type AuditConfig struct {
+	// Enabled gates the whole module.
+	Enabled bool `yaml:"enabled"`
+	// BatchMax events per report POST (default 50).
+	BatchMax int `yaml:"batch_max"`
+	// FlushInterval seconds between report attempts (default 15).
+	FlushInterval int `yaml:"flush_interval"`
+	// RulesRefresh minutes between rule pulls (default 5).
+	RulesRefresh int `yaml:"rules_refresh"`
+	// QueueCap bounds memory while the panel is unreachable (default 5000).
+	QueueCap int `yaml:"queue_cap"`
 }
 
 type CertConfig struct {

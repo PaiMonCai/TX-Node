@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cedar2025/xboard-node/internal/audit"
 	"github.com/cedar2025/xboard-node/internal/cert"
 	"github.com/cedar2025/xboard-node/internal/cert/dnsproviders"
 	"github.com/cedar2025/xboard-node/internal/config"
@@ -152,6 +153,32 @@ func newService(cfg *config.Config, cp controlplane.ControlPlane) *Service {
 
 	l := limiter.New()
 	st := limiter.NewSpeedTracker(l)
+
+	// tx-node audit (sing-box kernel only): reuse the stock panel
+	// credentials so reports authenticate exactly like stock node reports.
+	// Multi-node / machine mode: cfg is already per-node expanded
+	// (ExpandNodes / ExpandMachineNode), so NodeID/MachineID/Token here
+	// are always correct for this instance.
+	if cfg.Audit.Enabled {
+		if sb, ok := k.(*singbox.SingBox); ok {
+			sb.SetAuditor(audit.New(audit.Config{
+				Enabled:       cfg.Audit.Enabled,
+				BatchMax:      cfg.Audit.BatchMax,
+				FlushInterval: cfg.Audit.FlushInterval,
+				RulesRefresh:  cfg.Audit.RulesRefresh,
+				QueueCap:      cfg.Audit.QueueCap,
+			}, audit.PanelAuth{
+				BaseURL:   cfg.Panel.URL,
+				Token:     cfg.Panel.Token,
+				NodeID:    cfg.Panel.NodeID,
+				NodeType:  cfg.Panel.NodeType,
+				MachineID: cfg.Panel.MachineID,
+			}))
+		} else {
+			nlog.Core().Warn("audit enabled but kernel is not sing-box, skipping",
+				"kernel", cfg.Kernel.Type)
+		}
+	}
 
 	return &Service{
 		cfg:          cfg,

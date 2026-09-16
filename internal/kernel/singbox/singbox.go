@@ -18,6 +18,7 @@ import (
 	"github.com/sagernet/sing/service"
 	"golang.org/x/time/rate"
 
+	"github.com/cedar2025/xboard-node/internal/audit"
 	"github.com/cedar2025/xboard-node/internal/config"
 	"github.com/cedar2025/xboard-node/internal/kernel"
 	"github.com/cedar2025/xboard-node/internal/model"
@@ -49,6 +50,10 @@ type SingBox struct {
 	// Created fresh on every Start (full restart).
 	// Survives Reload (hot-swap) since live connections persist.
 	connTracker *ConnTracker
+
+	// auditor is the tx-node audit reporter, forwarded to every new
+	// ConnTracker at Start (like speedLimitFunc). nil = disabled.
+	auditor *audit.Reporter
 
 	// speedLimitFunc resolves a user UUID to a *rate.Limiter.
 	// Set once by SetSpeedLimitFunc and forwarded to every new ConnTracker.
@@ -142,6 +147,9 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 	// Fresh tracker on full restart.
 	s.connTracker = NewConnTracker(0)
 	s.connTracker.SetUserMap(buildUserMap(users))
+	if s.auditor != nil {
+		s.connTracker.SetAuditor(s.auditor)
+	}
 	if s.speedLimitFunc != nil {
 		s.connTracker.SetSpeedLimitFunc(s.speedLimitFunc)
 	}
@@ -392,6 +400,16 @@ func (s *SingBox) SetSpeedLimitFunc(fn func(uuid string) *rate.Limiter) {
 	s.speedLimitFunc = fn
 	if s.connTracker != nil {
 		s.connTracker.SetSpeedLimitFunc(fn)
+	}
+}
+
+// SetAuditor injects the tx-node audit reporter (sing-box kernel only).
+func (s *SingBox) SetAuditor(r *audit.Reporter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.auditor = r
+	if s.connTracker != nil {
+		s.connTracker.SetAuditor(r)
 	}
 }
 

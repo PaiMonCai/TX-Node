@@ -15,6 +15,7 @@ import (
 	N "github.com/sagernet/sing/common/network"
 	"golang.org/x/time/rate"
 
+	"github.com/cedar2025/xboard-node/internal/audit"
 	"github.com/cedar2025/xboard-node/internal/nlog"
 )
 
@@ -139,6 +140,9 @@ type ConnTracker struct {
 	globalDevices    map[int]map[string]bool // userID → IP → exists
 	globalMu         sync.RWMutex
 	globalLastUpdate time.Time
+
+	// auditor is the tx-node audit reporter (nil = disabled, zero overhead).
+	auditor *audit.Reporter
 }
 
 // NewConnTracker creates a tracker.
@@ -200,6 +204,26 @@ func (t *ConnTracker) ClearGlobalDevices() {
 	nlog.Core().Debug("global device state cleared")
 }
 
+// SetAuditor injects the tx-node audit reporter. Called once at Start.
+func (t *ConnTracker) SetAuditor(r *audit.Reporter) {
+	t.auditor = r
+}
+
+// auditTarget extracts the audit target from connection metadata:
+// sniffed domain > proxy-protocol domain > destination IP.
+func auditTarget(metadata adapter.InboundContext) string {
+	if metadata.Domain != "" {
+		return metadata.Domain
+	}
+	if fqdn := metadata.Destination.Fqdn; fqdn != "" {
+		return fqdn
+	}
+	if metadata.Destination.IsValid() {
+		return metadata.Destination.Addr.String()
+	}
+	return ""
+}
+
 // ─── adapter.ConnectionTracker ──────────────────────────────────────────────
 
 // RoutedConnection wraps a TCP conn to count bytes per-user, track IPs,
@@ -232,6 +256,11 @@ func (t *ConnTracker) RoutedConnection(
 	// Register connection
 	if us != nil {
 		us.addConn(sourceIP)
+	}
+
+	// tx-node audit: observe routed TCP connection (no-op when disabled)
+	if t.auditor != nil && uid > 0 {
+		t.auditor.Observe(uid, auditTarget(metadata), sourceIP)
 	}
 
 	connID := t.nextID()
@@ -289,6 +318,11 @@ func (t *ConnTracker) RoutedPacketConnection(
 
 	if us != nil {
 		us.addConn(sourceIP)
+	}
+
+	// tx-node audit: observe routed UDP connection (no-op when disabled)
+	if t.auditor != nil && uid > 0 {
+		t.auditor.Observe(uid, auditTarget(metadata), sourceIP)
 	}
 
 	connID := t.nextID()

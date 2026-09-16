@@ -31,6 +31,7 @@
 # 不加这段 = 与原版 xboard-node 行为完全一致。
 # audit:
 #   enabled: true
+#   report_all: false     # true = 全量访问日志上报（面板可查看所有连接，量级大）
 #   batch_max: 50        # 每次上报最多多少条事件
 #   flush_interval: 15   # 上报间隔（秒）
 #   rules_refresh: 5     # 规则拉取间隔（分钟）

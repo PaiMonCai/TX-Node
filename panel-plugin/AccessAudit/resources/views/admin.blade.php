@@ -103,14 +103,51 @@
   </div>
 
   <div class="tabs">
-    <button class="active" data-tab="rules" onclick="switchTab('rules')">审计规则</button>
+    <button class="active" data-tab="logs" onclick="switchTab('logs')">访问日志</button>
+    <button data-tab="rules" onclick="switchTab('rules')">审计规则</button>
     <button data-tab="reports" onclick="switchTab('reports')">命中记录</button>
     <button data-tab="nodes" onclick="switchTab('nodes')">节点状态</button>
     <button data-tab="bans" onclick="switchTab('bans')">封禁管理</button>
   </div>
 
+  <!-- 访问日志（全量，report_all 节点上报） -->
+  <div class="pane active" id="pane-logs">
+    <div class="card">
+      <div class="row" style="margin-bottom:4px">
+        <select id="lNodeId" style="width:170px"><option value="">全部节点</option></select>
+        <input id="lUserId" type="number" placeholder="用户ID" style="width:110px" />
+        <input id="lKeyword" placeholder="目标关键字" style="width:160px" />
+        <select id="lMatched" style="width:110px">
+          <option value="">全部</option>
+          <option value="1">仅命中</option>
+          <option value="0">仅未命中</option>
+        </select>
+      </div>
+      <div class="row">
+        <input id="lFrom" type="datetime-local" style="width:200px" title="起始时间" />
+        <span style="color:#9ca3af">至</span>
+        <input id="lTo" type="datetime-local" style="width:200px" title="结束时间" />
+        <button class="secondary" onclick="loadLogs(1)">查询</button>
+        <button class="ghost" onclick="resetLogFilter()">重置</button>
+      </div>
+      <div class="hint">仅显示开启 <span class="mono">report_all</span> 的节点上报的全量日志；按插件配置保留天数自动清理（默认 3 天）。命中记录请见「命中记录」tab。</div>
+      <div class="row" style="margin-top:6px;justify-content:space-between">
+        <span id="logsTotal" class="hint"></span>
+        <span class="row">
+          <button class="ghost small" id="logsPrev" onclick="logsPage(-1)">上一页</button>
+          <span id="logsPageInfo" class="hint"></span>
+          <button class="ghost small" id="logsNext" onclick="logsPage(1)">下一页</button>
+        </span>
+      </div>
+      <table>
+        <thead><tr><th>时间</th><th>节点</th><th>用户</th><th>目标</th><th>来源IP</th><th>命中</th></tr></thead>
+        <tbody id="logsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- 规则 -->
-  <div class="pane active" id="pane-rules">
+  <div class="pane" id="pane-rules">
     <div class="card">
       <div class="hint" style="margin-bottom:12px">
         匹配类型：<b>domain</b> 精确域名 · <b>domain_suffix</b> 域名后缀（含子域名，如规则 <span class="mono">example.com</span> 命中 <span class="mono">a.example.com</span>）·
@@ -250,7 +287,7 @@ async function login() {
   document.getElementById('userLabel').textContent = email;
   document.getElementById('loginWrap').style.display = 'none';
   document.getElementById('workspace').style.display = '';
-  loadStats(); loadRules(); loadNodes().then(() => loadReports()); loadBanLogs();
+  loadStats(); loadRules(); loadNodes().then(() => { loadLogs(1); loadReports(); }); loadBanLogs();
 }
 
 function logout() {
@@ -262,21 +299,76 @@ function logout() {
 function switchTab(name) {
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   document.querySelectorAll('.pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + name));
+  if (name === 'logs') loadLogs();
   if (name === 'reports') loadReports();
   if (name === 'nodes') loadNodes();
   if (name === 'bans') loadBanLogs();
+}
+
+/* ── 访问日志 ── */
+let logsCurPage = 1, logsTotalPages = 1;
+
+function dtToTs(id) {
+  const v = document.getElementById(id).value;
+  return v ? Math.floor(new Date(v).getTime() / 1000) : '';
+}
+
+function resetLogFilter() {
+  ['lNodeId','lUserId','lKeyword','lMatched','lFrom','lTo'].forEach(id => document.getElementById(id).value = '');
+  loadLogs(1);
+}
+
+function logsPage(delta) {
+  const p = logsCurPage + delta;
+  if (p < 1 || p > logsTotalPages) return;
+  loadLogs(p);
+}
+
+async function loadLogs(page) {
+  logsCurPage = page || 1;
+  const params = new URLSearchParams();
+  const nid = document.getElementById('lNodeId').value;
+  const uid = document.getElementById('lUserId').value;
+  const kw = document.getElementById('lKeyword').value.trim();
+  const m = document.getElementById('lMatched').value;
+  const from = dtToTs('lFrom');
+  const to = dtToTs('lTo');
+  if (nid) params.set('node_id', nid);
+  if (uid) params.set('user_id', uid);
+  if (kw) params.set('keyword', kw);
+  if (m !== '') params.set('matched', m);
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  params.set('page', logsCurPage);
+  const r = await api('/plugin/access-audit/logs?' + params.toString());
+  const d = r.data || {};
+  const rows = d.list || [];
+  logsTotalPages = d.pages || 1;
+  document.getElementById('logsTotal').textContent = `共 ${d.total ?? 0} 条`;
+  document.getElementById('logsPageInfo').textContent = `${d.page ?? 1} / ${d.pages ?? 1}`;
+  document.getElementById('logsBody').innerHTML = rows.map(x => `
+    <tr>
+      <td style="white-space:nowrap">${ts(x.created_at)}</td>
+      <td title="#${x.node_id}">${esc(x.node_name)}</td>
+      <td>${esc(x.user_email)}</td>
+      <td class="mono">${esc(x.target)}</td>
+      <td class="mono">${esc(x.source_ip || '-')}</td>
+      <td>${x.matched ? '<span class="badge no">命中</span>' : '<span class="badge ok">-</span>'}</td>
+    </tr>`).join('') || '<tr><td colspan="6" class="hint">暂无记录（节点 config.yml 开启 audit.report_all 后才有全量数据）</td></tr>';
 }
 
 /* ── 节点状态 ── */
 async function loadNodes() {
   const r = await api('/plugin/access-audit/nodes');
   nodesCache = r.data || [];
-  // 同步刷新命中记录页的节点下拉
-  const sel = document.getElementById('fNodeId');
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">全部节点</option>' + nodesCache.map(n =>
-    `<option value="${n.node_id}">${esc(n.node_name)}</option>`).join('');
-  sel.value = cur;
+  // 同步刷新命中记录页 + 访问日志页的节点下拉
+  ['fNodeId', 'lNodeId'].forEach(id => {
+    const sel = document.getElementById(id);
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">全部节点</option>' + nodesCache.map(n =>
+      `<option value="${n.node_id}">${esc(n.node_name)}</option>`).join('');
+    sel.value = cur;
+  });
   document.getElementById('nodesBody').innerHTML = nodesCache.map(n => {
     const silent = n.silent_minutes;
     const badge = silent === null ? '<span class="badge">未上报</span>'

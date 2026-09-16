@@ -37,7 +37,7 @@
 
 | 内核 | 方案 | 说明 |
 |---|---|---|
-| sing-box | **tx-node**（推荐） | xboard-node 二开版，内嵌 audit 模块。config.yml 加 `audit: enabled: true` 即可，复用面板 token 零额外配置。见 tx-node 仓库 README-TXNODE.md |
+| sing-box | **tx-node**（推荐） | xboard-node 二开版，内嵌 audit 模块。config.yml 加 `audit: enabled: true` 即可，复用面板 token 零额外配置。需要全量访问日志再加 `report_all: true`（管理页「访问日志」tab 可查看/筛选，默认保留 3 天）。见仓库 README |
 | xray | **audit-agent.py** 旁路 | tail xray access log。配置 `server_token` + `node_id` + `log_path`。见 `node-agent/README.md` |
 
 ## 上报接口（节点侧实现参考）
@@ -50,7 +50,7 @@ Content-Type: application/json
   "token": "<server_token>",
   "node_id": 1,
   "events": [
-    {"user_id": 123, "target": "bad-site.com", "source_ip": "1.2.3.4"},
+    {"user_id": 123, "target": "bad-site.com", "source_ip": "1.2.3.4", "matched": true},
     ...
   ]
 }
@@ -58,6 +58,7 @@ Content-Type: application/json
 
 - 单次最多 500 条 events，建议攒批 10~30 秒发一次
 - `target` 支持域名或 IP
+- `matched`（v2.1+）：true=命中规则（走封禁流程），false=仅记入全量访问日志；缺省视为 true（兼容旧节点）
 - 响应：`{"data": {"node_id": 1, "received": N, "matched": M, "banned": B}}`
 
 ### 规则下发接口（节点本地预过滤用）

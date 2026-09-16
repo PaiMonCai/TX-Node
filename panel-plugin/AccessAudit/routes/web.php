@@ -16,6 +16,7 @@ Route::middleware(['web', 'admin'])->group(function () {
     Route::post('/plugin/access-audit/rules/delete', [AdminController::class, 'deleteRule']);
 
     Route::get('/plugin/access-audit/reports', [AdminController::class, 'reports']);
+    Route::get('/plugin/access-audit/logs', [AdminController::class, 'logs']);
     Route::get('/plugin/access-audit/ban-logs', [AdminController::class, 'banLogs']);
 
     Route::post('/plugin/access-audit/ban', [AdminController::class, 'ban']);

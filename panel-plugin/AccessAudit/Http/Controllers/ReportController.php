@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Plugin\AccessAudit\Models\AuditAccessLog;
 use Plugin\AccessAudit\Models\AuditNodeStatus;
 use Plugin\AccessAudit\Services\AuditProcessor;
 use Plugin\AccessAudit\Services\RuleMatcher;
@@ -40,9 +41,34 @@ class ReportController extends Controller
             'events.*.user_id' => 'required|integer|min:1',
             'events.*.target' => 'required|string|max:255',
             'events.*.source_ip' => 'nullable|string|max:45',
+            'events.*.matched' => 'nullable|boolean',
         ]);
 
         $matcher = new RuleMatcher();
+        $now = time();
+
+        // 兼容旧版节点（不带 matched 字段）：缺省视为命中（旧行为=只上报命中项）
+        $isMatched = fn (array $e) => array_key_exists('matched', $e) ? !empty($e['matched']) : true;
+
+        // 全量访问日志（report_all 模式）：批量插入，matched 标记由节点侧判定
+        $logRows = [];
+        foreach ($data['events'] as $event) {
+            $logRows[] = [
+                'node_id' => $nodeId,
+                'user_id' => (int) $event['user_id'],
+                'target' => mb_substr((string) $event['target'], 0, 255),
+                'source_ip' => isset($event['source_ip']) ? mb_substr((string) $event['source_ip'], 0, 45) : null,
+                'matched' => $isMatched($event) ? 1 : 0,
+                'created_at' => $now,
+            ];
+        }
+        try {
+            foreach (array_chunk($logRows, 200) as $chunk) {
+                AuditAccessLog::query()->insert($chunk);
+            }
+        } catch (\Throwable $e) {
+            Log::error('[AccessAudit] 全量日志写入失败: ' . $e->getMessage(), ['node_id' => $nodeId]);
+        }
 
         // 批量取用户，避免每条一次查询
         $userIds = array_values(array_unique(array_map(
@@ -53,6 +79,10 @@ class ReportController extends Controller
         $matched = 0;
         $banned = 0;
         foreach ($data['events'] as $event) {
+            // 未命中的事件只进全量日志，不走命中/封禁流程（省一次规则匹配）
+            if (!$isMatched($event)) {
+                continue;
+            }
             $user = $users->get((int) $event['user_id']);
             if (!$user) {
                 continue;

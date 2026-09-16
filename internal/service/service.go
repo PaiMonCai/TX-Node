@@ -163,6 +163,7 @@ func newService(cfg *config.Config, cp controlplane.ControlPlane) *Service {
 		if sb, ok := k.(*singbox.SingBox); ok {
 			sb.SetAuditor(audit.New(audit.Config{
 				Enabled:       cfg.Audit.Enabled,
+				ReportAll:     cfg.Audit.ReportAll,
 				BatchMax:      cfg.Audit.BatchMax,
 				FlushInterval: cfg.Audit.FlushInterval,
 				RulesRefresh:  cfg.Audit.RulesRefresh,

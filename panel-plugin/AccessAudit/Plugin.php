@@ -4,6 +4,7 @@ namespace Plugin\AccessAudit;
 
 use App\Services\Plugin\AbstractPlugin;
 use Illuminate\Console\Scheduling\Schedule;
+use Plugin\AccessAudit\Models\AuditAccessLog;
 use Plugin\AccessAudit\Models\AuditReport;
 use Plugin\AccessAudit\Services\NodeHealthMonitor;
 
@@ -41,6 +42,16 @@ class Plugin extends AbstractPlugin
                 ->where('created_at', '<', time() - $days * 86400)
                 ->delete();
         })->name('access-audit:purge')->daily()->onOneServer()->withoutOverlapping(5);
+
+        // 全量访问日志保留期清理（默认 3 天，量大）
+        $logDays = (int) ($this->getConfigValue('access_log_retention_days', 3) ?: 3);
+        if ($logDays > 0) {
+            $schedule->call(function () use ($logDays) {
+                AuditAccessLog::query()
+                    ->where('created_at', '<', time() - $logDays * 86400)
+                    ->delete();
+            })->name('access-audit:purge-logs')->daily()->onOneServer()->withoutOverlapping(5);
+        }
 
         // 节点级异常监控：上报中断 + 命中突增（每分钟）
         $schedule->call(function () {

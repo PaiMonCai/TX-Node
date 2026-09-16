@@ -43,6 +43,35 @@ func TestReporterDisabledByDefault(t *testing.T) {
 	r.Observe(1, "example.com", "1.1.1.1")
 }
 
+func TestReportAllQueuesMisses(t *testing.T) {
+	// 无 httptest，直接验证入队逻辑：report_all=true 时未命中也入队
+	r := New(Config{Enabled: false, ReportAll: true}, PanelAuth{})
+	if r.Enabled() {
+		t.Fatal("expected disabled (no auth)")
+	}
+	// 构造一个手动启用但不联网的 reporter
+	r2 := &Reporter{cfg: Config{Enabled: true, ReportAll: true, QueueCap: 10}}
+	r2.http = &http.Client{} // 仅作 Enabled() 判定，不实际请求
+	r2.Observe(7, "miss.example.org", "1.1.1.1") // 无规则 → matched=false
+	r2.mu.Lock()
+	defer r2.mu.Unlock()
+	if len(r2.queue) != 1 {
+		t.Fatalf("expected 1 queued event (report_all), got %d", len(r2.queue))
+	}
+	if r2.queue[0].Matched {
+		t.Error("expected Matched=false for non-matching target")
+	}
+	// report_all=false 时未命中不入队
+	r3 := &Reporter{cfg: Config{Enabled: true, ReportAll: false, QueueCap: 10}}
+	r3.http = &http.Client{}
+	r3.Observe(7, "miss.example.org", "1.1.1.1")
+	r3.mu.Lock()
+	defer r3.mu.Unlock()
+	if len(r3.queue) != 0 {
+		t.Fatalf("expected 0 queued events (report_all=false), got %d", len(r3.queue))
+	}
+}
+
 func TestReporterDisabledWithoutAuth(t *testing.T) {
 	r := New(Config{Enabled: true}, PanelAuth{})
 	if r.Enabled() {

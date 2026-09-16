@@ -5,6 +5,7 @@ namespace Plugin\AccessAudit\Http\Controllers;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Plugin\AccessAudit\Models\AuditAccessLog;
 use Plugin\AccessAudit\Models\AuditBanLog;
 use Plugin\AccessAudit\Models\AuditNodeStatus;
 use Plugin\AccessAudit\Models\AuditReport;
@@ -145,6 +146,64 @@ class AdminController extends Controller
         return response()->json([
             'data' => AuditBanLog::query()->orderByDesc('id')->limit(100)->get(),
         ]);
+    }
+
+    // ── 全量访问日志 ──────────────────────────────────────────
+
+    /**
+     * 访问日志查询（节点/用户/目标关键字/时间范围筛选）
+     * GET logs?node_id=&user_id=&keyword=&from=&to=&page=
+     */
+    public function logs(Request $request)
+    {
+        $query = AuditAccessLog::query()->orderByDesc('id');
+        if ($request->filled('node_id')) {
+            $query->where('node_id', (int) $request->input('node_id'));
+        }
+        if ($request->filled('user_id')) {
+            $query->where('user_id', (int) $request->input('user_id'));
+        }
+        if ($request->filled('keyword')) {
+            $kw = trim((string) $request->input('keyword'));
+            $query->where('target', 'like', '%' . str_replace(['%', '_'], ['\\%', '\\_'], $kw) . '%');
+        }
+        if ($request->filled('from')) {
+            $query->where('created_at', '>=', (int) $request->input('from'));
+        }
+        if ($request->filled('to')) {
+            $query->where('created_at', '<=', (int) $request->input('to'));
+        }
+        if ($request->filled('matched')) {
+            $query->where('matched', (int) $request->input('matched'));
+        }
+
+        $page = max(1, (int) $request->input('page', 1));
+        $perPage = 50;
+        $total = $query->count();
+        $logs = $query->offset(($page - 1) * $perPage)->limit($perPage)->get();
+
+        $emails = User::query()->whereIn('id', $logs->pluck('user_id')->unique())
+            ->pluck('email', 'id');
+        $nodeNames = \App\Models\Server::query()
+            ->whereIn('id', $logs->pluck('node_id')->unique())->pluck('name', 'id');
+
+        return response()->json(['data' => [
+            'total' => $total,
+            'page' => $page,
+            'per_page' => $perPage,
+            'pages' => (int) ceil($total / $perPage),
+            'list' => $logs->map(fn ($l) => [
+                'id' => $l->id,
+                'node_id' => $l->node_id,
+                'node_name' => $nodeNames[$l->node_id] ?? "节点 #{$l->node_id}",
+                'user_id' => $l->user_id,
+                'user_email' => $emails[$l->user_id] ?? "?#{$l->user_id}",
+                'target' => $l->target,
+                'source_ip' => $l->source_ip,
+                'matched' => (bool) $l->matched,
+                'created_at' => $l->created_at,
+            ]),
+        ]]);
     }
 
     // ── 手动封禁 / 解封 ───────────────────────────────────────

@@ -37,6 +37,9 @@ const (
 type Config struct {
 	// Enabled gates the whole module. Default false.
 	Enabled bool `yaml:"enabled"`
+	// ReportAll queues every routed connection (not just rule hits) so the
+	// panel gets a full access log. Default false = only rule-matched hits.
+	ReportAll bool `yaml:"report_all"`
 	// BatchMax events per report POST. Default 50.
 	BatchMax int `yaml:"batch_max"`
 	// FlushInterval seconds between report attempts. Default 15.
@@ -72,6 +75,7 @@ type Event struct {
 	UserID   int    `json:"user_id"`
 	Target   string `json:"target"`
 	SourceIP string `json:"source_ip,omitempty"`
+	Matched  bool   `json:"matched"` // 是否命中审计规则（report_all 模式下区分全量/命中）
 }
 
 // Reporter pulls rules, matches connection targets and batches reports.
@@ -110,6 +114,15 @@ func New(cfg Config, auth PanelAuth) *Reporter {
 	if cfg.QueueCap <= 0 {
 		cfg.QueueCap = 5000
 	}
+	// report_all 量级大得多，放宽批量和队列默认上限
+	if cfg.ReportAll {
+		if cfg.BatchMax <= 0 || cfg.BatchMax == 50 {
+			cfg.BatchMax = 200
+		}
+		if cfg.QueueCap <= 0 || cfg.QueueCap == 5000 {
+			cfg.QueueCap = 50000
+		}
+	}
 	r.cfg = cfg
 	r.auth.BaseURL = strings.TrimRight(auth.BaseURL, "/")
 	r.http = &http.Client{Timeout: 15 * time.Second}
@@ -124,8 +137,8 @@ func New(cfg Config, auth PanelAuth) *Reporter {
 func (r *Reporter) Enabled() bool { return r != nil && r.http != nil }
 
 // Observe is called by the kernel for every routed connection.
-// Non-matching targets return immediately with zero allocation beyond
-// lowercasing; matching targets are queued for the next flush.
+// report_all=false: only rule-matched targets are queued.
+// report_all=true: every connection is queued, with Matched marking rule hits.
 func (r *Reporter) Observe(userID int, target, sourceIP string) {
 	if !r.Enabled() || userID <= 0 || target == "" {
 		return
@@ -134,12 +147,13 @@ func (r *Reporter) Observe(userID int, target, sourceIP string) {
 	if target == "" {
 		return
 	}
-	if !r.match(target) {
+	matched := r.match(target)
+	if !matched && !r.cfg.ReportAll {
 		return
 	}
 	r.mu.Lock()
 	if len(r.queue) < r.cfg.QueueCap {
-		r.queue = append(r.queue, Event{UserID: userID, Target: target, SourceIP: sourceIP})
+		r.queue = append(r.queue, Event{UserID: userID, Target: target, SourceIP: sourceIP, Matched: matched})
 	}
 	r.mu.Unlock()
 }

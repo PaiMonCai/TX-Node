@@ -155,7 +155,10 @@ type KernelConfig struct {
 type AuditConfig struct {
 	// Enabled gates the whole module.
 	Enabled bool `yaml:"enabled"`
-	// BatchMax events per report POST (default 50).
+	// ReportAll queues every routed connection (not just rule hits) as a
+	// full access log. Default false = only rule-matched hits.
+	ReportAll bool `yaml:"report_all"`
+	// BatchMax events per report POST (default 50; report_all 模式 200).
 	BatchMax int `yaml:"batch_max"`
 	// FlushInterval seconds between report attempts (default 15).
 	FlushInterval int `yaml:"flush_interval"`

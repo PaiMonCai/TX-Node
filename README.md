@@ -98,11 +98,13 @@ services:
 audit:
   enabled: true
   report_all: false    # true = 上报全部连接（含未命中），面板留存全量访问日志
-  batch_max: 50        # 每次上报最多事件数（report_all 默认 200）
+  batch_max: 50        # 每次上报最多事件数（report_all 默认 200；面板单批上限 500）
   flush_interval: 15   # 上报间隔（秒）
   rules_refresh: 5     # 规则拉取间隔（分钟）
   queue_cap: 5000      # 面板不可达时的本地队列上限（report_all 默认 50000）
 ```
+
+> `batch_max` 上限为 **500**（面板上报接口 `MAX_EVENTS` 限制），超过会被 422 拒绝整批。
 
 ### 负载与容量边界（重要）
 

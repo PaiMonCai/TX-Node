@@ -32,6 +32,11 @@ import (
 const (
 	rulesPath  = "/api/v1/plugin/access-audit/rules"
 	reportPath = "/api/v1/plugin/access-audit/report"
+
+	// maxEventsPerBatch mirrors the panel's MAX_EVENTS validation cap.
+	// Batches larger than this are rejected with 422 (whole batch lost),
+	// so clamp BatchMax instead and warn.
+	maxEventsPerBatch = 500
 )
 
 // Default batch/queue sizes for the two reporting modes.
@@ -112,21 +117,31 @@ type Stats struct {
 
 // Reporter pulls rules, matches connection targets and batches reports.
 // Safe for concurrent use. A nil *Reporter is valid and disabled.
+//
+// Locking protocol:
+//   - rules is an immutable snapshot published via atomic.Pointer and read
+//     lock-free by match(). refreshRules builds a fresh slice and Stores it;
+//     snapshots are never mutated after publication.
+//   - queueMu guards only the queue. This matters under report_all: every
+//     new connection calls Observe → match(); when match() held the same
+//     mutex as the queue, rule matching (linear scan) serialized connection
+//     establishment against flush/requeue for no reason.
 type Reporter struct {
 	auth PanelAuth
 	cfg  Config
 
 	http *http.Client
 
-	mu    sync.Mutex
-	rules []rule
-	queue []Event
+	rules atomic.Pointer[[]rule]
+
+	queueMu sync.Mutex
+	queue   []Event
 
 	// counters are atomics so Observe() stays lock-free for metrics reads.
 	dropped  atomic.Uint64
 	reported atomic.Uint64
 	failed   atomic.Uint64
-	// overflowLogged throttles the "queue full" warning to one log per minute.
+	// lastDropWarn throttles the "queue full" warning to one log per minute.
 	lastDropWarn atomic.Int64
 }
 
@@ -165,6 +180,11 @@ func New(cfg Config, auth PanelAuth) *Reporter {
 		return r
 	}
 	cfg.BatchMax, cfg.QueueCap = resolveSizes(cfg)
+	if cfg.BatchMax > maxEventsPerBatch {
+		nlog.Core().Warn("audit: batch_max exceeds panel limit, clamped",
+			"configured", cfg.BatchMax, "clamped_to", maxEventsPerBatch)
+		cfg.BatchMax = maxEventsPerBatch
+	}
 	if cfg.FlushInterval <= 0 {
 		cfg.FlushInterval = 15
 	}
@@ -192,9 +212,9 @@ func (r *Reporter) Stats() Stats {
 	if r == nil {
 		return Stats{}
 	}
-	r.mu.Lock()
+	r.queueMu.Lock()
 	queued := len(r.queue)
-	r.mu.Unlock()
+	r.queueMu.Unlock()
 	return Stats{
 		Dropped:  r.dropped.Load(),
 		Reported: r.reported.Load(),
@@ -218,16 +238,16 @@ func (r *Reporter) Observe(userID int, target, sourceIP string) {
 	if !matched && !r.cfg.ReportAll {
 		return
 	}
-	r.mu.Lock()
+	r.queueMu.Lock()
 	if len(r.queue) < r.cfg.QueueCap {
 		r.queue = append(r.queue, Event{UserID: userID, Target: target, SourceIP: sourceIP, Matched: matched})
-		r.mu.Unlock()
+		r.queueMu.Unlock()
 		return
 	}
 	// Queue full: drop the event, but never silently — a noisy panel must be
 	// visible in the logs and in Stats().Dropped.
 	queued := len(r.queue)
-	r.mu.Unlock()
+	r.queueMu.Unlock()
 
 	dropped := r.dropped.Add(1)
 	now := time.Now().Unix()
@@ -320,20 +340,23 @@ func (r *Reporter) refreshRules() {
 		}
 		body.Data[i].values = vals
 	}
-	r.mu.Lock()
-	r.rules = body.Data
-	r.mu.Unlock()
+	// Publish an immutable snapshot; match() reads it lock-free.
+	snapshot := body.Data
+	r.rules.Store(&snapshot)
 	nlog.Core().Debug("audit: rules refreshed", "count", len(body.Data))
 }
 
 // match checks target against cached rules. Semantics mirror the panel's
-// PHP RuleMatcher.
+// PHP RuleMatcher. Lock-free: reads the latest immutable snapshot.
 func (r *Reporter) match(target string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	p := r.rules.Load()
+	if p == nil || len(*p) == 0 {
+		return false
+	}
+	rules := *p
 	isIP := net.ParseIP(target) != nil
-	for i := range r.rules {
-		rule := &r.rules[i]
+	for i := range rules {
+		rule := &rules[i]
 		if isIP && rule.MatchType != "ip_cidr" && rule.MatchType != "keyword" {
 			continue
 		}
@@ -396,9 +419,9 @@ func (r *Reporter) flushAll() {
 	}
 	// Budget hit while events remain: report the residual backlog so the
 	// operator can raise maxBatchesPerFlush / lower flush_interval.
-	r.mu.Lock()
+	r.queueMu.Lock()
 	backlog := len(r.queue)
-	r.mu.Unlock()
+	r.queueMu.Unlock()
 	if backlog > 0 {
 		nlog.Core().Warn("audit: flush budget exhausted with backlog",
 			"backlog", backlog, "queue_cap", r.cfg.QueueCap,
@@ -409,9 +432,9 @@ func (r *Reporter) flushAll() {
 // flushOnce posts up to BatchMax queued events.
 // Returns true when a batch was successfully delivered.
 func (r *Reporter) flushOnce() bool {
-	r.mu.Lock()
+	r.queueMu.Lock()
 	if len(r.queue) == 0 {
-		r.mu.Unlock()
+		r.queueMu.Unlock()
 		return false
 	}
 	batch := r.queue
@@ -419,7 +442,7 @@ func (r *Reporter) flushOnce() bool {
 		batch = batch[:r.cfg.BatchMax]
 	}
 	r.queue = r.queue[len(batch):]
-	r.mu.Unlock()
+	r.queueMu.Unlock()
 
 	payload := map[string]interface{}{"events": batch}
 	r.authPayload(payload)
@@ -460,22 +483,22 @@ func (r *Reporter) flushOnce() bool {
 // cannot take it all, the overflow is dropped with an explicit counter bump —
 // never silently.
 func (r *Reporter) requeue(batch []Event) {
-	r.mu.Lock()
+	r.queueMu.Lock()
 	room := r.cfg.QueueCap - len(r.queue)
 	if room <= 0 {
-		r.mu.Unlock()
+		r.queueMu.Unlock()
 		r.recordDrop(len(batch), "queue full on requeue")
 		return
 	}
 	if room >= len(batch) {
 		r.queue = append(batch, r.queue...)
-		r.mu.Unlock()
+		r.queueMu.Unlock()
 		return
 	}
 	// Keep the newest events (tail of the batch) — they are more actionable.
 	dropped := len(batch) - room
 	r.queue = append(batch[dropped:], r.queue...)
-	r.mu.Unlock()
+	r.queueMu.Unlock()
 	r.recordDrop(dropped, "partial requeue overflow")
 }
 
@@ -498,6 +521,10 @@ func (r *Reporter) String() string {
 		return "audit: disabled"
 	}
 	s := r.Stats()
+	ruleCount := 0
+	if p := r.rules.Load(); p != nil {
+		ruleCount = len(*p)
+	}
 	return fmt.Sprintf("audit: panel=%s node=%d queued=%d rules=%d reported=%d dropped=%d failed=%d",
-		r.auth.BaseURL, r.auth.NodeID, s.Queued, len(r.rules), s.Reported, s.Dropped, s.Failed)
+		r.auth.BaseURL, r.auth.NodeID, s.Queued, ruleCount, s.Reported, s.Dropped, s.Failed)
 }

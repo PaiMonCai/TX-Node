@@ -137,8 +137,8 @@ func TestReportAllQueuesMisses(t *testing.T) {
 	r2 := &Reporter{cfg: Config{Enabled: true, ReportAll: true, QueueCap: 10}}
 	r2.http = &http.Client{} // 仅作 Enabled() 判定，不实际请求
 	r2.Observe(7, "miss.example.org", "1.1.1.1") // 无规则 → matched=false
-	r2.mu.Lock()
-	defer r2.mu.Unlock()
+	r2.queueMu.Lock()
+	defer r2.queueMu.Unlock()
 	if len(r2.queue) != 1 {
 		t.Fatalf("expected 1 queued event (report_all), got %d", len(r2.queue))
 	}
@@ -149,10 +149,8 @@ func TestReportAllQueuesMisses(t *testing.T) {
 	r3 := &Reporter{cfg: Config{Enabled: true, ReportAll: false, QueueCap: 10}}
 	r3.http = &http.Client{}
 	r3.Observe(7, "miss.example.org", "1.1.1.1")
-	r3.mu.Lock()
-	defer r3.mu.Unlock()
-	if len(r3.queue) != 0 {
-		t.Fatalf("expected 0 queued events (report_all=false), got %d", len(r3.queue))
+	if n := len(r3.queue); n != 0 {
+		t.Fatalf("expected 0 queued events (report_all=false), got %d", n)
 	}
 }
 
@@ -206,10 +204,7 @@ func TestReporterObserveAndFlush(t *testing.T) {
 	// wait for initial rule pull
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		r.mu.Lock()
-		n := len(r.rules)
-		r.mu.Unlock()
-		if n > 0 {
+		if p := r.rules.Load(); p != nil && len(*p) > 0 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -274,10 +269,7 @@ func TestReporterRequeueOnFailure(t *testing.T) {
 	// wait for rules
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		r.mu.Lock()
-		n := len(r.rules)
-		r.mu.Unlock()
-		if n > 0 {
+		if p := r.rules.Load(); p != nil && len(*p) > 0 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -286,9 +278,7 @@ func TestReporterRequeueOnFailure(t *testing.T) {
 	r.Observe(1, "x.com", "")
 	// first flush fails → requeue
 	time.Sleep(1500 * time.Millisecond)
-	r.mu.Lock()
-	queued := len(r.queue)
-	r.mu.Unlock()
+	queued := r.Stats().Queued
 	if queued != 1 {
 		t.Fatalf("expected 1 requeued event, got %d", queued)
 	}
@@ -298,10 +288,7 @@ func TestReporterRequeueOnFailure(t *testing.T) {
 	mu.Unlock()
 	deadline = time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		r.mu.Lock()
-		queued = len(r.queue)
-		r.mu.Unlock()
-		if queued == 0 {
+		if queued = r.Stats().Queued; queued == 0 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -321,10 +308,7 @@ func TestObserveDropsWhenQueueFull(t *testing.T) {
 		r.Observe(i+1, "miss.example.org", "1.1.1.1")
 	}
 
-	r.mu.Lock()
-	queued := len(r.queue)
-	r.mu.Unlock()
-	if queued != 3 {
+	if queued := r.Stats().Queued; queued != 3 {
 		t.Fatalf("queued = %d, want 3 (QueueCap)", queued)
 	}
 	if got := r.Stats().Dropped; got != 7 {
@@ -380,10 +364,7 @@ func TestFlushAllDrainsMultipleBatches(t *testing.T) {
 	if total != 45 {
 		t.Fatalf("expected 45 events delivered, got %d", total)
 	}
-	r.mu.Lock()
-	left := len(r.queue)
-	r.mu.Unlock()
-	if left != 0 {
+	if left := r.Stats().Queued; left != 0 {
 		t.Fatalf("queue not drained, %d left", left)
 	}
 }

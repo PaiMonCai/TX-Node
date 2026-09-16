@@ -14,6 +14,10 @@ use Plugin\AccessAudit\Services\AuditProcessor;
 
 class AdminController extends Controller
 {
+    /** stats 结果进程内缓存（仪表盘数字允许 60s 滞后） */
+    private static ?array $statsCache = null;
+    private static int $statsCachedAt = 0;
+
     public function page()
     {
         return response()->view('AccessAudit::admin');
@@ -21,15 +25,45 @@ class AdminController extends Controller
 
     public function stats()
     {
+        if (self::$statsCache !== null && time() - self::$statsCachedAt < 60) {
+            return response()->json(['data' => self::$statsCache]);
+        }
+
         $todayStart = strtotime('today');
-        return response()->json(['data' => [
+        $data = [
             'rules_total' => AuditRule::query()->count(),
             'rules_enabled' => AuditRule::query()->where('enabled', 1)->count(),
-            'reports_total' => AuditReport::query()->count(),
+            // 大表全表 COUNT(*) 在百万行级要数秒，仪表盘总数用估算值
+            'reports_total' => self::approxRowCount('audit_reports'),
             'reports_today' => AuditReport::query()->where('created_at', '>=', $todayStart)->count(),
             'bans_total' => AuditBanLog::query()->where('action', 'ban')->count(),
             'bans_today' => AuditBanLog::query()->where('action', 'ban')->where('created_at', '>=', $todayStart)->count(),
-        ]]);
+        ];
+
+        self::$statsCache = $data;
+        self::$statsCachedAt = time();
+        return response()->json(['data' => $data]);
+    }
+
+    /**
+     * information_schema 的行数估算（InnoDB 统计值，误差可接受）。
+     * 读取失败时退回精确 COUNT。
+     */
+    private static function approxRowCount(string $table): int
+    {
+        try {
+            $row = \Illuminate\Support\Facades\DB::selectOne(
+                'SELECT TABLE_ROWS AS n FROM information_schema.TABLES
+                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
+                [$table]
+            );
+            if ($row && $row->n !== null) {
+                return (int) $row->n;
+            }
+        } catch (\Throwable $e) {
+            // information_schema 不可读（权限等）时退回
+        }
+        return (int) AuditReport::query()->toBase()->count();
     }
 
     // ── 节点维度 ──────────────────────────────────────────────
@@ -92,6 +126,7 @@ class AdminController extends Controller
         } else {
             $rule = AuditRule::create($data);
         }
+        \Plugin\AccessAudit\Services\RuleMatcher::flushCache();
 
         return response()->json(['data' => $rule]);
     }
@@ -103,6 +138,7 @@ class AdminController extends Controller
             return response()->json(['error' => ['message' => '规则不存在']], 404);
         }
         $rule->delete();
+        \Plugin\AccessAudit\Services\RuleMatcher::flushCache();
         return response()->json(['data' => true]);
     }
 

@@ -14,7 +14,8 @@ use Plugin\AccessAudit\Models\AuditRule;
  * 审计处理器：记录命中 → 阈值判定 → 自动封禁 → TG 告警
  *
  * 性能约定（重要）：
- *   - 构造只读一次配置，不在每次请求重复查库
+ *   - 构造零 SQL：配置经 ConfigCache（60s TTL）读取，规则匹配的规则集
+ *     由 RuleMatcher 快照缓存提供
  *   - 阈值判定所需的历史命中数由调用方【批量预取】，避免每条事件一次 COUNT(*)
  *   - ban() 的事务内只做写操作，TG 网络请求一律放在事务外
  */
@@ -22,20 +23,9 @@ class AuditProcessor
 {
     private array $cfg;
 
-    /**
-     * 进程内配置缓存。插件配置在一次请求生命周期内不会变，
-     * 复用可省掉每次实例化的 1 次查询。
-     */
-    private static ?array $cfgCache = null;
-
     public function __construct()
     {
-        if (self::$cfgCache !== null) {
-            $this->cfg = self::$cfgCache;
-            return;
-        }
-
-        $config = app(\App\Services\Plugin\PluginConfigService::class)->getConfig('access_audit');
+        $config = ConfigCache::get();
         $val = fn (string $key, $default) => $config[$key]['value'] ?? $default;
         $this->cfg = [
             'auto_ban' => (int) $val('auto_ban_enabled', 1) === 1,
@@ -43,13 +33,12 @@ class AuditProcessor
             'window' => max(1, (int) $val('default_window_minutes', 60)),
             'chat_id' => trim((string) $val('alert_chat_id', '')),
         ];
-        self::$cfgCache = $this->cfg;
     }
 
-    /** 清空配置缓存（管理员改配置后调用） */
+    /** 清空配置缓存（配置变更后需要立即生效时调用） */
     public static function flushConfigCache(): void
     {
-        self::$cfgCache = null;
+        ConfigCache::flush();
     }
 
     public function config(): array

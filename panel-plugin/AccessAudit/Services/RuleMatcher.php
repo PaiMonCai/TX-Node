@@ -6,23 +6,55 @@ use Plugin\AccessAudit\Models\AuditRule;
 
 /**
  * 目标匹配引擎：域名/后缀/关键字/IP CIDR
+ *
+ * 规则集经进程内快照缓存（60s TTL）读取：上报热路径每个 POST 都要
+ * 实例化本类，规则表查询不该跟着 POST 频率走。规则 CRUD 后由
+ * AdminController 显式调用 flushCache() 立即失效，TTL 兜底其余场景。
  */
 class RuleMatcher
 {
+    private const TTL = 60;
+
+    /** @var array<int, array{rule: AuditRule, values: string[]}>|null */
+    private static ?array $snapshot = null;
+    private static int $snapshotAt = 0;
+
     /** @var array<int, array{rule: AuditRule, values: string[]}> */
     private array $rules = [];
 
     public function __construct()
     {
+        $this->rules = self::snapshot();
+    }
+
+    /** 规则 CRUD 后调用，立即失效快照 */
+    public static function flushCache(): void
+    {
+        self::$snapshot = null;
+        self::$snapshotAt = 0;
+    }
+
+    /**
+     * @return array<int, array{rule: AuditRule, values: string[]}>
+     */
+    private static function snapshot(): array
+    {
+        if (self::$snapshot !== null && time() - self::$snapshotAt < self::TTL) {
+            return self::$snapshot;
+        }
+        $rules = [];
         foreach (AuditRule::query()->where('enabled', 1)->get() as $rule) {
             $values = array_values(array_filter(array_map(
                 fn ($v) => strtolower(trim($v)),
                 preg_split('/[\r\n,]+/', (string) $rule->match_value)
             )));
             if ($values) {
-                $this->rules[] = ['rule' => $rule, 'values' => $values];
+                $rules[] = ['rule' => $rule, 'values' => $values];
             }
         }
+        self::$snapshot = $rules;
+        self::$snapshotAt = time();
+        return $rules;
     }
 
     /**

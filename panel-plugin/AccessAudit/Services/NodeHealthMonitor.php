@@ -3,7 +3,6 @@
 namespace Plugin\AccessAudit\Services;
 
 use App\Models\User;
-use App\Services\Plugin\PluginConfigService;
 use App\Services\TelegramService;
 use Illuminate\Support\Facades\Log;
 use Plugin\AccessAudit\Models\AuditNodeStatus;
@@ -27,7 +26,7 @@ class NodeHealthMonitor
 
     public function __construct()
     {
-        $config = app(PluginConfigService::class)->getConfig('access_audit');
+        $config = ConfigCache::get();
         $val = fn (string $key, $default) => $config[$key]['value'] ?? $default;
         $this->cfg = [
             'enabled' => (int) $val('node_health_enabled', 1) === 1,

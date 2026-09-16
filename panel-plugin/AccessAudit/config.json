@@ -2,7 +2,7 @@
   "name": "访问审计",
   "code": "access_audit",
   "type": "feature",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "节点访问审计：tx-node(sing-box 内嵌) / audit-agent.py(xray 旁路) 上报连接日志，命中名单自动封禁 + TG 告警，分节点查看 + 节点级异常通报",
   "author": "Hermes",
   "admin_menus": [
@@ -55,6 +55,18 @@
       "label": "上报中断阈值（分钟）",
       "description": "节点曾经上报过但超过 N 分钟无新上报时告警"
     },
+    "node_offline_cooldown": {
+      "type": "number",
+      "default": 3600,
+      "label": "上报中断告警冷却（秒）",
+      "description": "同一节点两次中断告警之间的最小间隔，防止重复轰炸"
+    },
+    "node_spike_enabled": {
+      "type": "number",
+      "default": 1,
+      "label": "命中突增监控开关",
+      "description": "1=启用命中数突增通报；0=关闭（仅保留上报中断监控）"
+    },
     "node_spike_window": {
       "type": "number",
       "default": 30,
@@ -72,6 +84,12 @@
       "default": 10,
       "label": "突增最小命中数",
       "description": "当前窗口至少达到此命中数才判定突增（防小基数误报）"
+    },
+    "node_spike_cooldown": {
+      "type": "number",
+      "default": 1800,
+      "label": "突增告警冷却（秒）",
+      "description": "同一节点两次突增告警之间的最小间隔"
     },
     "access_log_retention_days": {
       "type": "number",

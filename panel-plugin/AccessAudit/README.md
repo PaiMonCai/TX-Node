@@ -59,6 +59,7 @@ Content-Type: application/json
 - 单次最多 500 条 events，建议攒批 10~30 秒发一次
 - `target` 支持域名或 IP
 - `matched`（v2.1+）：true=命中规则（走封禁流程），false=仅记入全量访问日志；缺省视为 true（兼容旧节点）
+- `node_id` 必须与认证身份一致；服务端从 `ServerV2` 认证属性取，请求体中的 `node_id` 仅作参考
 - 响应：`{"data": {"node_id": 1, "received": N, "matched": M, "banned": B}}`
 
 ### 规则下发接口（节点本地预过滤用）
@@ -93,17 +94,34 @@ agent 解析 access log 行格式提取 `(用户邮箱/uuid, 目标域名)`。�
 | `audit_rules` | 审计规则（名单） |
 | `audit_reports` | 命中记录（按 `report_retention_days` 自动清理，默认 30 天） |
 | `audit_ban_logs` | 封禁/解封操作日志 |
+| `audit_node_status` | 节点上报状态（最后上报时间、累计批/条/命中/封禁数） |
+| `audit_access_logs` | 全量访问日志（仅在节点开启 `report_all` 时写入，按 `access_log_retention_days` 清理，默认 3 天） |
 
 ## 配置项
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `api_secret` | 空 | 上报密钥，**必填**否则上报接口 503 |
 | `alert_chat_id` | 空 | TG 告警 chat_id，空=第一个绑定了 TG 的管理员 |
 | `default_threshold` | 3 | 默认封禁阈值 |
 | `default_window_minutes` | 60 | 默认统计窗口（分钟） |
 | `auto_ban_enabled` | 1 | 是否自动封禁 |
 | `report_retention_days` | 30 | 命中记录保留天数 |
+| `node_health_enabled` | 1 | 节点异常监控开关（上报中断 / 命中突增） |
+| `node_offline_minutes` | 10 | 上报中断阈值（分钟） |
+| `node_offline_cooldown` | 3600 | 上报中断告警冷却（秒） |
+| `node_spike_enabled` | 1 | 命中突增监控开关 |
+| `node_spike_window` | 30 | 突增统计窗口（分钟） |
+| `node_spike_growth_pct` | 200 | 突增增长阈值（%） |
+| `node_spike_min_hits` | 10 | 突增最小命中数 |
+| `node_spike_cooldown` | 1800 | 突增告警冷却（秒） |
+| `access_log_retention_days` | 3 | 全量访问日志保留天数 |
+
+> 上报无需配置密钥：认证复用节点原有 `server_token` + `node_id`（`ServerV2` 中间件），插件侧无 `api_secret` 配置项。
+
+## 已知限制
+
+- **UDP 连接的强制断开**：tx-node 侧 UDP/QUIC 连接不进入连接跟踪表（`connMap`），因此面板下发的 `CloseConnection` 对 UDP 连接无效。封禁用户后，UDP 会话需等其自然超时或客户端重连（重连时会被 `RemoveUsers` 拦截）。TCP 连接不受影响。
+- **xray 侧 user_id 识别**：`audit-agent.py` 依赖 access log 中 `email: user@<数字ID>` 格式提取 user_id，UUID 形式的用户标识暂不支持（后续版本补充）。
 
 ## 合规提示
 

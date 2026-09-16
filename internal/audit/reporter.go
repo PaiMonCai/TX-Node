@@ -33,6 +33,16 @@ const (
 	reportPath = "/api/v1/plugin/access-audit/report"
 )
 
+// Default batch/queue sizes for the two reporting modes.
+const (
+	defaultBatchMax = 50
+	defaultQueueCap = 5000
+	// report_all carries far more traffic (every routed connection, not just
+	// rule hits), so it gets larger defaults.
+	reportAllBatchMax = 200
+	reportAllQueueCap = 50000
+)
+
 // Config mirrors the `audit:` section of config.yml.
 type Config struct {
 	// Enabled gates the whole module. Default false.
@@ -40,13 +50,14 @@ type Config struct {
 	// ReportAll queues every routed connection (not just rule hits) so the
 	// panel gets a full access log. Default false = only rule-matched hits.
 	ReportAll bool `yaml:"report_all"`
-	// BatchMax events per report POST. Default 50.
+	// BatchMax events per report POST. Default 50 (200 when ReportAll).
 	BatchMax int `yaml:"batch_max"`
 	// FlushInterval seconds between report attempts. Default 15.
 	FlushInterval int `yaml:"flush_interval"`
 	// RulesRefresh minutes between rule pulls. Default 5.
 	RulesRefresh int `yaml:"rules_refresh"`
-	// QueueCap bounds memory when the panel is unreachable. Default 5000.
+	// QueueCap bounds memory when the panel is unreachable.
+	// Default 5000 (50000 when ReportAll).
 	QueueCap int `yaml:"queue_cap"`
 }
 
@@ -91,6 +102,29 @@ type Reporter struct {
 	queue []Event
 }
 
+// resolveSizes applies defaults for batch/queue sizes.
+//
+// The caller's explicit values always win: we branch on the raw config BEFORE
+// any default is written, so a user who explicitly sets batch_max: 50 (or
+// queue_cap: 5000) keeps that value instead of being silently bumped to the
+// report_all default.
+func resolveSizes(cfg Config) (batchMax, queueCap int) {
+	batchMax, queueCap = cfg.BatchMax, cfg.QueueCap
+	if batchMax <= 0 {
+		batchMax = defaultBatchMax
+		if cfg.ReportAll {
+			batchMax = reportAllBatchMax
+		}
+	}
+	if queueCap <= 0 {
+		queueCap = defaultQueueCap
+		if cfg.ReportAll {
+			queueCap = reportAllQueueCap
+		}
+	}
+	return batchMax, queueCap
+}
+
 // New builds a Reporter. Returns a disabled (but non-nil) reporter when
 // cfg.Enabled is false or the panel auth is incomplete.
 func New(cfg Config, auth PanelAuth) *Reporter {
@@ -102,26 +136,12 @@ func New(cfg Config, auth PanelAuth) *Reporter {
 		nlog.Core().Warn("audit: enabled but panel url/token missing, disabled")
 		return r
 	}
-	if cfg.BatchMax <= 0 {
-		cfg.BatchMax = 50
-	}
+	cfg.BatchMax, cfg.QueueCap = resolveSizes(cfg)
 	if cfg.FlushInterval <= 0 {
 		cfg.FlushInterval = 15
 	}
 	if cfg.RulesRefresh <= 0 {
 		cfg.RulesRefresh = 5
-	}
-	if cfg.QueueCap <= 0 {
-		cfg.QueueCap = 5000
-	}
-	// report_all 量级大得多，放宽批量和队列默认上限
-	if cfg.ReportAll {
-		if cfg.BatchMax <= 0 || cfg.BatchMax == 50 {
-			cfg.BatchMax = 200
-		}
-		if cfg.QueueCap <= 0 || cfg.QueueCap == 5000 {
-			cfg.QueueCap = 50000
-		}
 	}
 	r.cfg = cfg
 	r.auth.BaseURL = strings.TrimRight(auth.BaseURL, "/")
@@ -129,7 +149,8 @@ func New(cfg Config, auth PanelAuth) *Reporter {
 
 	go r.loop()
 	nlog.Core().Info("audit reporter enabled",
-		"panel", r.auth.BaseURL, "node_id", auth.NodeID, "machine_id", auth.MachineID)
+		"panel", r.auth.BaseURL, "node_id", auth.NodeID, "machine_id", auth.MachineID,
+		"report_all", cfg.ReportAll, "batch_max", cfg.BatchMax, "queue_cap", cfg.QueueCap)
 	return r
 }
 

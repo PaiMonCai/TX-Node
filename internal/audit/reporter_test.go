@@ -34,6 +34,90 @@ func TestMatchOne(t *testing.T) {
 	}
 }
 
+// TestResolveSizes covers the explicit-value-wins contract: a user who sets
+// batch_max/queue_cap explicitly must keep their value, even when it happens
+// to equal the non-report_all default.
+func TestResolveSizes(t *testing.T) {
+	cases := []struct {
+		name              string
+		cfg               Config
+		wantBatch, wantQ  int
+	}{
+		{
+			name: "zero values get default",
+			cfg:  Config{},
+			wantBatch: defaultBatchMax, wantQ: defaultQueueCap,
+		},
+		{
+			name: "zero values get report_all default",
+			cfg:  Config{ReportAll: true},
+			wantBatch: reportAllBatchMax, wantQ: reportAllQueueCap,
+		},
+		{
+			name: "explicit 50 kept under report_all",
+			// 回归：旧实现用 `== 50` 反推"未配置"，会把这里的 50 改写成 200
+			cfg:  Config{ReportAll: true, BatchMax: 50, QueueCap: 5000},
+			wantBatch: 50, wantQ: 5000,
+		},
+		{
+			name: "explicit custom kept under report_all",
+			cfg:  Config{ReportAll: true, BatchMax: 12, QueueCap: 999},
+			wantBatch: 12, wantQ: 999,
+		},
+		{
+			name: "explicit custom kept without report_all",
+			cfg:  Config{BatchMax: 7, QueueCap: 321},
+			wantBatch: 7, wantQ: 321,
+		},
+		{
+			name: "negative treated as unset",
+			cfg:  Config{BatchMax: -1, QueueCap: -5},
+			wantBatch: defaultBatchMax, wantQ: defaultQueueCap,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotBatch, gotQ := resolveSizes(c.cfg)
+			if gotBatch != c.wantBatch {
+				t.Errorf("batchMax = %d, want %d", gotBatch, c.wantBatch)
+			}
+			if gotQ != c.wantQ {
+				t.Errorf("queueCap = %d, want %d", gotQ, c.wantQ)
+			}
+		})
+	}
+}
+
+// TestNewKeepsExplicitSizes verifies New() preserves explicit sizes end to end.
+//
+// Uses an httptest server rather than a fake base URL: New() starts the loop
+// goroutine immediately, and a bogus host would leave it retrying against a
+// dead address for the rest of the test binary's lifetime (polluting other
+// tests' logs). A live stub keeps the goroutine harmless.
+func TestNewKeepsExplicitSizes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case rulesPath:
+			io.WriteString(w, `{"data":[]}`)
+		default:
+			io.WriteString(w, `{"data":{}}`)
+		}
+	}))
+	defer srv.Close()
+
+	r := New(Config{Enabled: true, ReportAll: true, BatchMax: 50, QueueCap: 5000},
+		PanelAuth{BaseURL: srv.URL, Token: "t", NodeID: 1})
+	if !r.Enabled() {
+		t.Fatal("expected enabled")
+	}
+	if r.cfg.BatchMax != 50 {
+		t.Errorf("BatchMax = %d, want 50 (explicit value must win)", r.cfg.BatchMax)
+	}
+	if r.cfg.QueueCap != 5000 {
+		t.Errorf("QueueCap = %d, want 5000 (explicit value must win)", r.cfg.QueueCap)
+	}
+}
+
 func TestReporterDisabledByDefault(t *testing.T) {
 	r := New(Config{}, PanelAuth{BaseURL: "https://p", Token: "t", NodeID: 1})
 	if r.Enabled() {

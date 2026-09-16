@@ -18,11 +18,21 @@ Xboard 节点后端（fork of [cedar2025/Xboard-Node](https://github.com/cedar20
 ghcr.io/paimoncai/tx-node:latest
 ```
 
+### 一键部署脚本（推荐）
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/PaiMonCai/TX-Node/main/deploy.sh)
+```
+
+脚本完成：Docker 环境检测/自动安装 → 交互式填写面板地址 / token / node_id（或 machine 模式 machine_id + 机器令牌）→ 生成 `/etc/xboard-node/config.yml` + `docker-compose.yml` → 拉镜像启动 → 部署后自检（容器存活 + 审计模块连通）。重复执行可升级/重配/卸载（幂等）。
+
 > 首次使用前确认 GitHub Packages 里 `tx-node` 包的可见性为 **Public**
 > （Packages → tx-node → Package settings → Change visibility），
 > 否则节点拉取镜像需要先 `docker login ghcr.io`。
 
-### 1. 准备配置文件
+### 手动部署
+
+**1. 准备配置文件**
 
 ```bash
 mkdir -p /etc/xboard-node
@@ -41,7 +51,7 @@ audit:
 EOF
 ```
 
-### 2. 启动
+**2. 启动**
 
 ```bash
 docker run -d --restart=always --network=host \
@@ -50,7 +60,7 @@ docker run -d --restart=always --network=host \
   ghcr.io/paimoncai/tx-node:latest
 ```
 
-### 3. 验证
+**3. 验证**
 
 ```bash
 docker logs tx-node | grep "audit reporter enabled"
@@ -58,7 +68,7 @@ docker logs tx-node | grep "audit reporter enabled"
 
 看到这行 = 审计模块已启用并连上面板。之后在面板 `/plugin/access-audit` 配置审计规则，命中记录和节点状态都会出现在管理页。
 
-### Docker Compose
+**4. Docker Compose（等价手动方式）**
 
 ```yaml
 services:

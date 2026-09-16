@@ -93,6 +93,16 @@ audit:
   queue_cap: 5000      # 面板不可达时的本地队列上限
 ```
 
+## 配套面板插件（AccessAudit）
+
+`panel-plugin/AccessAudit/` 是 Xboard 面板侧的审计插件（v2.0）：接收节点上报、名单匹配、阈值自动封禁、TG 告警、分节点查看、节点级异常通报（上报中断/命中突增）。
+
+- 源码直接在本仓库 `panel-plugin/AccessAudit/`，发布时 CI 自动打包 `AccessAudit-plugin.zip`（Release 附件）
+- 安装：zip 上传到 Xboard 后台插件管理（或放 `plugins/` 目录）→ 启用 → 管理页 `/plugin/access-audit`
+- xray 内核节点用的旁路 agent 也在插件包内（`node-agent/audit-agent.py`）
+
+详细文档见插件包内 `README.md`。
+
 ## 原版用法（不变的部分）
 
 环境变量快捷模式（无审计）：`-e apiHost=... -e apiKey=... -e nodeID=...`；xbctl 多实例管理；自定义路由/出站（`docs-custom-routes.md` / `docs-custom-outbounds.md`）；ACME DNS-01 证书（`docs-dns-providers.md`）——均与上游一致，详见上游 README 和文档。

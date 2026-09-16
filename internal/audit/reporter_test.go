@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -50,10 +51,13 @@ func TestReporterDisabledWithoutAuth(t *testing.T) {
 }
 
 func TestReporterObserveAndFlush(t *testing.T) {
+	var mu sync.Mutex
 	var gotRulesAuth, gotReport map[string]interface{}
 	var reported []Event
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
 		switch req.URL.Path {
 		case rulesPath:
 			gotRulesAuth = map[string]interface{}{
@@ -105,10 +109,18 @@ func TestReporterObserveAndFlush(t *testing.T) {
 
 	// wait for flush
 	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && len(reported) < 2 {
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(reported)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
+	mu.Lock()
+	defer mu.Unlock()
 	if len(reported) != 2 {
 		t.Fatalf("expected 2 reported events, got %d: %+v", len(reported), reported)
 	}
@@ -125,13 +137,17 @@ func TestReporterObserveAndFlush(t *testing.T) {
 }
 
 func TestReporterRequeueOnFailure(t *testing.T) {
+	var mu sync.Mutex
 	fail := true
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path == rulesPath {
 			io.WriteString(w, `{"data":[{"id":1,"name":"t","match_type":"domain","match_value":"x.com"}]}`)
 			return
 		}
-		if fail {
+		mu.Lock()
+		f := fail
+		mu.Unlock()
+		if f {
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
@@ -164,7 +180,9 @@ func TestReporterRequeueOnFailure(t *testing.T) {
 		t.Fatalf("expected 1 requeued event, got %d", queued)
 	}
 
+	mu.Lock()
 	fail = false
+	mu.Unlock()
 	deadline = time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		r.mu.Lock()

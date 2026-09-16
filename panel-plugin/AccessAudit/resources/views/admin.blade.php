@@ -76,7 +76,7 @@
 <div class="wrap" id="loginWrap" style="display:none">
   <div class="card login-card">
     <h2>🛡️ 访问审计</h2>
-    <div class="hint" style="margin-bottom:16px">使用 Xboard 管理员账号登录。凭据仅保存在当前页面内存，刷新需重新登录。</div>
+    <div class="hint" style="margin-bottom:16px">使用 Xboard 管理员账号登录。登录状态保存在本浏览器（localStorage），点「退出」清除。</div>
     <input id="loginEmail" type="email" placeholder="管理员邮箱" autocomplete="username" />
     <input id="loginPassword" type="password" placeholder="密码" autocomplete="current-password" onkeydown="if(event.key==='Enter')login()" />
     <button onclick="login()">登 录</button>
@@ -237,6 +237,22 @@ let token = null;
 let rulesCache = [];
 let nodesCache = [];
 
+/* ── 会话持久化（localStorage）── */
+const LS_KEY = 'aa_session';
+function saveSession(email, tok) {
+  try { localStorage.setItem(LS_KEY, JSON.stringify({ email, token: tok, at: Date.now() })); } catch (e) {}
+}
+function loadSession() {
+  try {
+    const s = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
+    if (s && s.token) return s;
+  } catch (e) {}
+  return null;
+}
+function clearSession() {
+  try { localStorage.removeItem(LS_KEY); } catch (e) {}
+}
+
 /* ── 基础 ── */
 function ts(t) { return t ? new Date(t * 1000).toLocaleString('zh-CN', { hour12: false }) : '-'; }
 function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
@@ -283,15 +299,23 @@ async function login() {
     return;
   }
   token = d.auth_data;
+  saveSession(email, token);
   document.getElementById('loginPassword').value = '';
+  enterWorkspace(email);
+}
+
+function enterWorkspace(email) {
   document.getElementById('userLabel').textContent = email;
   document.getElementById('loginWrap').style.display = 'none';
   document.getElementById('workspace').style.display = '';
   loadStats(); loadRules(); loadNodes().then(() => { loadLogs(1); loadReports(); }); loadBanLogs();
+  startAutoRefresh();
 }
 
 function logout() {
   token = null;
+  clearSession();
+  stopAutoRefresh();
   document.getElementById('workspace').style.display = 'none';
   document.getElementById('loginWrap').style.display = '';
 }
@@ -548,9 +572,37 @@ async function opUser(action) {
   loadBanLogs(); loadStats();
 }
 
-/* 进入页面：直接显示登录卡片 */
-document.getElementById('loginWrap').style.display = '';
-document.getElementById('loginEmail').focus();
+/* ── 静默自动刷新（当前 tab，30 秒）── */
+let autoTimer = null;
+function startAutoRefresh() {
+  stopAutoRefresh();
+  autoTimer = setInterval(() => {
+    if (document.hidden) return; // 后台标签页不刷新，省请求
+    const active = document.querySelector('.tabs button.active');
+    if (!active) return;
+    const name = active.dataset.tab;
+    if (name === 'logs') loadLogs(logsCurPage);
+    else if (name === 'reports') loadReports();
+    else if (name === 'nodes') loadNodes();
+    else if (name === 'bans') loadBanLogs();
+    loadStats();
+  }, 30000);
+}
+function stopAutoRefresh() {
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+}
+
+/* 进入页面：有已存会话则直接恢复，否则显示登录卡片 */
+(function init() {
+  const s = loadSession();
+  if (s) {
+    token = s.token;
+    enterWorkspace(s.email || 'admin');
+  } else {
+    document.getElementById('loginWrap').style.display = '';
+    document.getElementById('loginEmail').focus();
+  }
+})();
 </script>
 </body>
 </html>

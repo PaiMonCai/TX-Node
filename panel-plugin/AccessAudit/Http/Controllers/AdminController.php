@@ -16,17 +16,55 @@ class AdminController extends Controller
 {
     public function page()
     {
-        // 主审计页与分析页保持独立，但在页头提供明确入口。
-        // 这里做轻量 HTML 注入，避免把已经很大的 admin.blade.php 再拆改一遍。
+        // 主审计页与分析页保持独立，但首页必须有稳定、可见的入口。
+        // 旧实现依赖匹配一段固定 HTML 后 str_replace；Blade/缓存/旧 worker 下可能匹配失败。
+        // 这里改为在 </body> 前无条件注入一个小脚本：优先把按钮放到页头时间后面，
+        // 如果页头结构未来变化，则退化为右上角浮动按钮，确保入口不会再“消失”。
         $html = view('AccessAudit::admin')->render();
-        $needle = '<span class="aa-pagehead-meta" id="headClock"></span>';
-        $link = '<a class="aa-btn aa-btn--ghost aa-btn--sm" href="/plugin/access-audit/insights" '
-            . 'style="text-decoration:none" title="打开长期趋势、排行和插件设置">'
-            . '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-            . '<path d="M4 20V10M10 20V4M16 20v-6M22 20H2"/></svg>数据分析与设置</a>';
 
-        if (str_contains($html, $needle)) {
-            $html = str_replace($needle, $needle . $link, $html);
+        $entryScript = <<<'HTML'
+<script>
+(function () {
+  function installAccessAuditInsightsEntry() {
+    if (document.getElementById('aaInsightsEntry')) return;
+
+    const link = document.createElement('a');
+    link.id = 'aaInsightsEntry';
+    link.className = 'aa-btn aa-btn--ghost aa-btn--sm';
+    link.href = '/plugin/access-audit/insights';
+    link.title = '打开数据分析、排行和插件设置';
+    link.style.textDecoration = 'none';
+    link.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-6M22 20H2"/></svg><span>数据分析与设置</span>';
+
+    const clock = document.getElementById('headClock');
+    const headerActions = clock && clock.parentElement;
+    if (headerActions) {
+      clock.insertAdjacentElement('afterend', link);
+      return;
+    }
+
+    // 兜底：即使未来页头 DOM 改版，仍保留一个可点击入口。
+    link.style.position = 'fixed';
+    link.style.top = '18px';
+    link.style.right = '18px';
+    link.style.zIndex = '9999';
+    link.style.background = '#fff';
+    document.body.appendChild(link);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', installAccessAuditInsightsEntry, { once: true });
+  } else {
+    installAccessAuditInsightsEntry();
+  }
+})();
+</script>
+HTML;
+
+        if (str_contains($html, '</body>')) {
+            $html = str_replace('</body>', $entryScript . "\n</body>", $html);
+        } else {
+            $html .= $entryScript;
         }
 
         return response($html);

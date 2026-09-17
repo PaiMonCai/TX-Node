@@ -57,6 +57,10 @@ SERVICE_NAME="xboard-node.service"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
 SB_BINARY="/usr/local/bin/xboard-node"
 XBCTL_PATH="/usr/local/bin/xbctl"
+# 本脚本的持久化副本（快捷命令 txnode 应该指向这里，而不是 $SELF_PATH）
+SELF_COPY="$INSTALL_DIR/deploy.sh"
+# 网络兜底：$SELF_PATH 不可靠时从这里重新拉一份脚本
+SCRIPT_RAW_URL="${SCRIPT_RAW_URL:-https://raw.githubusercontent.com/PaiMonCai/TX-Node/main/deploy.sh}"
 
 # 运行模式：docker | legacy | none，由 detect_deploy_mode 填充
 DEPLOY_MODE=""
@@ -1169,16 +1173,108 @@ do_install() {
   hint "随时执行 ${BOLD}txnode${NC} 进入运维面板"
 }
 
-# 把本脚本软链为 txnode 命令，方便后续进面板
+# 判断一个路径能否作为长期入口。
+# 用 `bash <(curl ...)` 运行时 SELF_PATH 是 /dev/fd/63 —— 那是进程替换的临时 fd，
+# **进程一退出就消失**。直接 ln -sf /dev/fd/63 /usr/local/bin/txnode，
+# 建出来的软链当场就是坏的（下次执行 txnode 找不到文件）。这正是
+# 「装完却没有可用快捷命令」的根因。
+self_path_is_persistent() {
+  local p="${1:-}"
+  [ -n "$p" ] || return 1
+  case "$p" in
+    /dev/fd/*|/proc/*|/dev/stdin|/dev/stdout) return 1 ;;
+  esac
+  [ -f "$p" ] || return 1
+  # 空文件也算不可靠（curl 失败/管道截断时会得到 0 字节）
+  [ -s "$p" ] || return 1
+  return 0
+}
+
+# 把脚本落到 $SELF_COPY：已有有效副本就直接用，否则复制自身，再不行才从网络拉。
+#
+# 顺序很重要：**先检查已有副本**。否则每次运行都要联网，一旦断网
+# （或 raw.githubusercontent.com 不通）就会把上一轮留下的好副本删掉，
+# 反而把本来能用的快捷命令搞坏。
+materialize_self_copy() {
+  mkdir -p "$INSTALL_DIR" 2>/dev/null || true
+
+  # 1) 已经有可用的持久化副本 → 直接用，不动它。
+  #    用 do_upgrade 做特征校验，避免把 curl 下到一半的 HTML 错误页当脚本。
+  if [ -s "$SELF_COPY" ] && grep -q 'do_upgrade' "$SELF_COPY" 2>/dev/null; then
+    chmod +x "$SELF_COPY" 2>/dev/null || true
+    return 0
+  fi
+
+  # 2) 自身路径可靠（正常 bash deploy.sh 场景）→ 复制自身，顺便刷新副本
+  if self_path_is_persistent "$SELF_PATH"; then
+    if cp -f "$SELF_PATH" "$SELF_COPY" 2>/dev/null && [ -s "$SELF_COPY" ]; then
+      chmod +x "$SELF_COPY" 2>/dev/null || true
+      return 0
+    fi
+  fi
+
+  # 3) 自身不可靠（curl|bash 场景）且没有副本 → 从网络取一份稳定的
+  if command -v curl >/dev/null 2>&1; then
+    if curl -fsSL "$SCRIPT_RAW_URL" -o "$SELF_COPY" 2>/dev/null && [ -s "$SELF_COPY" ]; then
+      chmod +x "$SELF_COPY" 2>/dev/null || true
+      return 0
+    fi
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    if wget -qO "$SELF_COPY" "$SCRIPT_RAW_URL" 2>/dev/null && [ -s "$SELF_COPY" ]; then
+      chmod +x "$SELF_COPY" 2>/dev/null || true
+      return 0
+    fi
+  fi
+
+  # 拉不到就**保留**原来的副本（哪怕是旧的），删掉只会让命令彻底失效
+  [ -s "$SELF_COPY" ] && return 0
+  return 1
+}
+
+# 把本脚本安装为 txnode 命令，方便后续进面板
 install_cli_link() {
-  if [ -n "$SELF_PATH" ] && [ -f "$SELF_PATH" ]; then
-    chmod +x "$SELF_PATH" 2>/dev/null || true
-    ln -sf "$SELF_PATH" "$CLI_LINK" 2>/dev/null && \
-      ok "已安装快捷命令: ${BOLD}txnode${NC}" || \
-      hint "软链失败，可继续用: bash $SELF_PATH"
-    # 顺便把脚本副本放进安装目录，避免用户删了源码目录后命令失效
-    cp -f "$SELF_PATH" "$INSTALL_DIR/deploy.sh" 2>/dev/null || true
-    chmod +x "$INSTALL_DIR/deploy.sh" 2>/dev/null || true
+  local target=""
+  if materialize_self_copy; then
+    target="$SELF_COPY"
+  elif self_path_is_persistent "$SELF_PATH"; then
+    target="$SELF_PATH"
+  fi
+
+  if [ -z "$target" ]; then
+    hint "未能取得脚本的持久化副本，跳过快捷命令安装"
+    hint "装好后可手动执行: bash $SELF_PATH link"
+    return 1
+  fi
+  chmod +x "$target" 2>/dev/null || true
+  if ln -sf "$target" "$CLI_LINK" 2>/dev/null; then
+    ok "已安装快捷命令: ${BOLD}txnode${NC}  ${DIM}(→ $target)${NC}"
+    return 0
+  fi
+  hint "软链失败，可继续用: bash $target"
+  return 1
+}
+
+# 显式重建快捷命令（也可修复旧的坏软链）
+do_link() {
+  title "快捷命令"
+  local cur=""
+  [ -L "$CLI_LINK" ] && cur=$(readlink "$CLI_LINK" 2>/dev/null || true)
+  if [ -n "$cur" ]; then
+    info "当前 $CLI_LINK → $cur"
+    if [ ! -e "$cur" ]; then
+      warn "该软链指向的文件已不存在（典型的 curl|bash 安装后遗症），即将重建"
+    fi
+  else
+    info "当前未安装快捷命令"
+  fi
+  echo
+  if install_cli_link; then
+    echo
+    ok "现在可直接执行: ${BOLD}txnode${NC}"
+    hint "查看全部命令: txnode help"
+  else
+    warn "快捷命令安装失败，可继续用: bash ${SELF_COPY}"
   fi
 }
 
@@ -1421,6 +1517,27 @@ do_upgrade() {
   return 0
 }
 
+# 选一个可用的编辑器。
+# $EDITOR 在很多最小化镜像/容器里**未设置**，而本脚本开了 set -u，
+# 直接 "$EDITOR" 会 unbound variable 让菜单崩掉 —— 所以一律走这里拿默认值。
+pick_editor() {
+  local ed="${EDITOR:-}"
+  [ -n "$ed" ] || ed="${VISUAL:-}"
+  if [ -z "$ed" ]; then
+    for c in nano vim vi; do
+      if command -v "$c" >/dev/null 2>&1; then ed="$c"; break; fi
+    done
+  fi
+  # 选中的编辑器不存在（比如 $EDITOR 指向没装的 emacs）→ 退回第一个可用的
+  if [ -n "$ed" ] && ! command -v "$ed" >/dev/null 2>&1; then
+    ed=""
+    for c in nano vim vi; do
+      if command -v "$c" >/dev/null 2>&1; then ed="$c"; break; fi
+    done
+  fi
+  printf '%s' "${ed:-vi}"
+}
+
 # ════════════════════════════════════════════════════════════════════
 #  动作：改配置
 # ════════════════════════════════════════════════════════════════════
@@ -1439,10 +1556,13 @@ do_reconfigure() {
   fi
 
   echo
+  # 注意：$EDITOR 在多数最小化镜像里**根本没有设置**，而本脚本开了 set -u，
+  # 这里裸写 "$EDITOR" 会直接 unbound variable 崩掉整个菜单。
+  # 凡是从环境里读的变量一律给默认值，见下方 pick_editor()。
   echo "  1) 用向导重新生成配置（覆盖 config.yml）"
-  echo "  2) 手动编辑 config.yml（$EDITOR）"
+  echo "  2) 手动编辑 config.yml（$(pick_editor)）"
   echo "  3) 仅修改日志级别"
-  echo "  4) 开关访问审计 / report_all"
+  echo "  4) 访问审计开关（同主菜单 ${BOLD}7${NC}）"
   echo "  5) 返回"
   read -r -p "选择 [1-5]: " c || return 0
   case "$c" in
@@ -1455,8 +1575,7 @@ do_reconfigure() {
       do_restart
       ;;
     2)
-      local ed="${EDITOR:-vi}"
-      command -v "$ed" >/dev/null 2>&1 || ed="vi"
+      local ed; ed=$(pick_editor)
       "$ed" "$CONFIG_FILE"
       if confirm "配置已保存，现在重启生效？" "Y"; then do_restart; fi
       ;;
@@ -1475,36 +1594,36 @@ do_reconfigure() {
       confirm "立即重启生效？" "Y" && do_restart || hint "稍后重启生效"
       ;;
     4)
-      toggle_audit
+      do_audit
       ;;
     *) return 0 ;;
   esac
 }
 
-toggle_audit() {
-  local aud rpt new_aud new_rpt
-  aud=$(grep -A1 -E '^audit:' "$CONFIG_FILE" 2>/dev/null | grep -m1 -E 'enabled:' | sed -E 's/.*enabled:[[:space:]]*//' | tr -d '\r' || echo "false")
-  rpt=$(grep -m1 -E '^[[:space:]]*report_all:' "$CONFIG_FILE" 2>/dev/null | sed -E 's/.*report_all:[[:space:]]*//' | tr -d '\r' || echo "false")
-  echo
-  echo "  当前访问审计: enabled=${aud:-false}  report_all=${rpt:-false}"
-  echo "  1) 开启审计 (enabled=true)"
-  echo "  2) 关闭审计 (enabled=false)"
-  echo "  3) 切换 report_all（全量/仅命中）"
-  echo "  4) 返回"
-  read -r -p "选择 [1-4]: " c || return 0
-  case "$c" in
-    1) new_aud="true" ;;
-    2) new_aud="false" ;;
-    3)
-      if [ "${rpt:-false}" = "true" ]; then new_rpt="false"; else new_rpt="true"; fi
-      ;;
-    *) return 0 ;;
-  esac
+# 读取当前审计开关状态，输出到 stdout，格式 "enabled=<v> report_all=<v>"
+audit_read() {
+  local aud rpt
+  aud=$(awk '
+    /^audit:/ {inaudit=1}
+    inaudit && /^[[:space:]]*enabled:/ && !d {sub(/.*enabled:[[:space:]]*/,""); gsub(/[^a-z]/,""); print; d=1}
+    /^[^[:space:]#]/ && !/^audit:/ {inaudit=0}
+  ' "$CONFIG_FILE" 2>/dev/null || true)
+  rpt=$(awk '
+    /^audit:/ {inaudit=1}
+    inaudit && /^[[:space:]]*report_all:/ && !d {sub(/.*report_all:[[:space:]]*/,""); gsub(/[^a-z]/,""); print; d=1}
+    /^[^[:space:]#]/ && !/^audit:/ {inaudit=0}
+  ' "$CONFIG_FILE" 2>/dev/null || true)
+  printf '%s %s' "${aud:-false}" "${rpt:-false}"
+}
+
+# 写入审计开关。参数：$1=enabled(可空) $2=report_all(可空)
+audit_write() {
+  local new_aud="${1:-}" new_rpt="${2:-}"
+  if [ -z "$new_aud" ] && [ -z "$new_rpt" ]; then return 0; fi
 
   backup_config
   if [ -n "${new_aud:-}" ]; then
     if grep -qE '^audit:' "$CONFIG_FILE"; then
-      sed -i -E "0,/^[[:space:]]*enabled:/s//  enabled: $new_aud/" "/dev/null" 2>/dev/null || true
       # 精确替换 audit 段内的 enabled（用 awk 限定范围，避免误改 panel 段的字段）
       awk -v v="$new_aud" '
         /^audit:/ {inaudit=1}
@@ -1535,9 +1654,135 @@ toggle_audit() {
     fi
     chmod 600 "$CONFIG_FILE" 2>/dev/null || true
     ok "audit.report_all → $new_rpt"
-    [ "$new_rpt" = "false" ] && hint "report_all=false 时需在面板配置启用规则，否则不上报任何数据"
+    # 注意：这里不能用 `[ ... ] && hint` 收尾。该函数在 audit_write 里是最后一条语句时，
+    # 条件为假会让函数返回非 0，set -e 下调用方直接退出（明明改成功了却报失败）。
+    if [ "$new_rpt" = "false" ]; then
+      hint "report_all=false 时需在面板配置启用规则，否则不上报任何数据"
+    fi
   fi
-  confirm "立即重启生效？" "Y" && do_restart || hint "稍后重启生效"
+  return 0
+}
+
+# 访问审计开关 —— 既支持主菜单交互，也支持非交互一键设置：
+#   txnode audit            → 显示状态 + 交互切换
+#   txnode audit on|off     → 一键开/关 enabled
+#   txnode audit all on|off → 一键设置 report_all
+do_audit() {
+  detect_deploy_mode
+  if [ "$DEPLOY_MODE" = "legacy" ]; then
+    warn "当前只有 install.sh 部署，审计开关只能改 txnode 的 docker 布局"
+    hint "想换到 txnode：用菜单「从 install.sh 导入」把它转成 docker 部署"
+    return 0
+  fi
+  if [ "$DEPLOY_MODE" = "none" ]; then
+    warn "txnode 尚未部署，请先安装（或从 install.sh 导入）"
+    return 0
+  fi
+  if [ ! -f "$CONFIG_FILE" ]; then
+    warn "配置文件不存在: $CONFIG_FILE"
+    return 0
+  fi
+
+  local sub="${1:-}" val="${2:-}"
+  local cur_aud cur_rpt
+  read -r cur_aud cur_rpt < <(audit_read)
+  cur_aud="${cur_aud:-false}"; cur_rpt="${cur_rpt:-false}"
+
+  # ── 非交互：一键设置 ──
+  if [ -n "$sub" ]; then
+    case "$sub" in
+      on|enable|true)
+        if [ "$cur_aud" = "true" ]; then ok "审计已经是开启状态，无需改动"; return 0; fi
+        audit_write "true" ""
+        ok "访问审计已开启 (enabled=true)"
+        ;;
+      off|disable|false)
+        if [ "$cur_aud" = "false" ]; then ok "审计已经是关闭状态，无需改动"; return 0; fi
+        audit_write "false" ""
+        ok "访问审计已关闭 (enabled=false)"
+        ;;
+      all|report-all|report_all)
+        case "$val" in
+          on|enable|true)  val="true" ;;
+          off|disable|false) val="false" ;;
+          *)
+            if [ "$cur_rpt" = "true" ]; then val="false"; else val="true"; fi ;;
+        esac
+        audit_write "" "$val"
+        ok "report_all 已设为 $val"
+        if [ "$val" = "true" ]; then
+          hint "全量上报：所有连接都记入面板访问日志（量可能很大）"
+        else
+          hint "仅上报命中规则的连接 —— 面板没配启用规则时一条都不会上报"
+        fi
+        ;;
+      status|show)
+        echo "  audit.enabled   = $cur_aud"
+        echo "  audit.report_all= $cur_rpt"
+        return 0
+        ;;
+      *)
+        warn "未知参数: audit $sub"
+        hint "用法: txnode audit [on|off|all on|off|status]"
+        return 1
+        ;;
+    esac
+    if confirm "立即重启生效？" "Y"; then do_restart; else hint "稍后执行 txnode restart 生效"; fi
+    return 0
+  fi
+
+  # ── 交互：主菜单 ──
+  while true; do
+    banner
+    echo
+    echo -e "  ${BOLD}访问审计开关${NC}"
+    echo
+    if [ "$cur_aud" = "true" ]; then
+      echo -e "  当前状态: ${GREEN}已开启${NC}    report_all=${cur_rpt}"
+    else
+      echo -e "  当前状态: ${DIM}已关闭${NC}    report_all=${cur_rpt}"
+    fi
+    echo
+    if [ "$cur_aud" = "true" ]; then
+      echo -e "   ${BOLD}1${NC}) ${BOLD}一键关闭审计${NC}       ${DIM}enabled=false${NC}"
+    else
+      echo -e "   ${BOLD}1${NC}) ${BOLD}一键开启审计${NC}       ${DIM}enabled=true${NC}"
+    fi
+    if [ "$cur_rpt" = "true" ]; then
+      echo -e "   ${BOLD}2${NC}) 只上报命中规则的连接   ${DIM}report_all=false${NC}"
+    else
+      echo -e "   ${BOLD}2${NC}) 上报全部连接           ${DIM}report_all=true${NC}"
+    fi
+    echo -e "   ${BOLD}3${NC}) 返回"
+    echo
+    if [ "$cur_aud" = "true" ] && [ "$cur_rpt" = "false" ]; then
+      echo -e "   ${YELLOW}[!]${NC} report_all=false：面板若没有启用任何规则，一条数据都不会上报。"
+      echo -e "       想要全量访问日志请选 ${BOLD}2${NC}。"
+      echo
+    fi
+    read -r -p "  请选择: " c || return 0
+    case "$c" in
+      1)
+        if [ "$cur_aud" = "true" ]; then
+          audit_write "false" ""; ok "访问审计已关闭"
+        else
+          audit_write "true" ""; ok "访问审计已开启"
+        fi
+        if confirm "立即重启生效？" "Y"; then do_restart; else hint "稍后执行重启生效"; fi
+        return 0
+        ;;
+      2)
+        if [ "$cur_rpt" = "true" ]; then
+          audit_write "" "false"; ok "report_all → false（仅上报命中规则的连接）"
+        else
+          audit_write "" "true"; ok "report_all → true（上报全部连接）"
+        fi
+        if confirm "立即重启生效？" "Y"; then do_restart; else hint "稍后执行重启生效"; fi
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  done
 }
 
 # 配置校验：语法层面（YAML 缩进/引号）与必填字段
@@ -2086,14 +2331,16 @@ menu() {
       echo -e "   ${BOLD}3${NC}) 重启                ${DIM}改完配置后用这个${NC}"
       echo -e "   ${BOLD}4${NC}) 启动 / 停止         ${DIM}子菜单${NC}"
       echo -e "   ${BOLD}5${NC}) 升级                ${DIM}拉取最新镜像并重建${NC}"
-      echo -e "   ${BOLD}6${NC}) 修改配置            ${DIM}向导 / 手编 / 日志级别 / 审计开关${NC}"
-      echo -e "   ${BOLD}7${NC}) 配置校验与诊断      ${DIM}排错用${NC}"
-      echo -e "   ${BOLD}8${NC}) 节点与机器管理      ${DIM}多节点 / 机器模式${NC}"
-      echo -e "   ${BOLD}9${NC}) 备份 / 恢复         ${DIM}配置备份与回滚${NC}"
-      echo -e "  ${BOLD}10${NC}) 卸载                ${DIM}保留配置${NC}"
-      echo -e "  ${BOLD}11${NC}) 彻底清除            ${RED}${DIM}删除全部数据（不可逆）${NC}"
+      echo -e "   ${BOLD}6${NC}) 修改配置            ${DIM}向导 / 手编 / 日志级别${NC}"
+      echo -e "   ${BOLD}7${NC}) 访问审计开关        ${DIM}一键开启 / 关闭审计上报${NC}"
+      echo -e "   ${BOLD}8${NC}) 配置校验与诊断      ${DIM}排错用${NC}"
+      echo -e "   ${BOLD}9${NC}) 节点与机器管理      ${DIM}多节点 / 机器模式${NC}"
+      echo -e "  ${BOLD}10${NC}) 备份 / 恢复         ${DIM}配置备份与回滚${NC}"
+      echo -e "  ${BOLD}11${NC}) 卸载                ${DIM}保留配置${NC}"
+      echo -e "  ${BOLD}12${NC}) 彻底清除            ${RED}${DIM}删除全部数据（不可逆）${NC}"
+      echo -e "  ${BOLD}13${NC}) 快捷命令            ${DIM}安装 / 重建 txnode 命令${NC}"
       if detect_legacy_install; then
-        echo -e "  ${BOLD}12${NC}) 从 install.sh 导入   ${CYAN}${DIM}检测到 install.sh 部署，可转成 docker${NC}"
+        echo -e "  ${BOLD}14${NC}) 从 install.sh 导入   ${CYAN}${DIM}检测到 install.sh 部署，可转成 docker${NC}"
       fi
     else
       echo -e "   ${BOLD}1${NC}) 安装 / 部署         ${DIM}交互式向导${NC}"
@@ -2141,12 +2388,14 @@ menu() {
       4) menu_power ;;
       5) do_upgrade; pause ;;
       6) do_reconfigure; pause ;;
-      7) do_validate; pause ;;
-      8) menu_nodes ;;
-      9) menu_backup ;;
-      10) do_uninstall; pause ;;
-      11) do_purge; pause ;;
-      12) do_migrate_legacy; pause ;;
+      7) do_audit; pause ;;
+      8) do_validate; pause ;;
+      9) menu_nodes ;;
+      10) menu_backup ;;
+      11) do_uninstall; pause ;;
+      12) do_purge; pause ;;
+      13) do_link; pause ;;
+      14) do_migrate_legacy; pause ;;
       0) echo; info "再见"; exit 0 ;;
       *) warn "无效选项"; sleep 1 ;;
     esac
@@ -2272,13 +2521,25 @@ usage() {
     pause          暂停（停止 + 取消开机自启）
     logs           查看实时日志
     reconfigure    修改配置
+    audit          访问审计开关（见下方）
     validate       配置校验
     doctor         环境与运行诊断
     backup         备份当前配置
     restore        从备份恢复
     uninstall      卸载（保留配置）
     purge          彻底清除（删除配置、镜像，不可逆）
+    link           安装 / 重建快捷命令 txnode
     help           显示本帮助
+
+  访问审计（audit）一键设置:
+    txnode audit           显示当前状态并交互式切换
+    txnode audit on        一键开启审计（enabled=true）
+    txnode audit off       一键关闭审计（enabled=false）
+    txnode audit all on    一键开全量上报（report_all=true）
+    txnode audit all off   仅上报命中规则的连接（report_all=false）
+
+    注：report_all=false 时，若面板没配任何启用规则，一条数据都不会上报。
+        要"全量访问日志"请用 all on；要"只记命中"请 all off 并在面板配规则。
 
   关于 install.sh 导入:
     txnode 使用独立目录 /etc/txnode，与 install.sh 的 /etc/xboard-node 完全分离，
@@ -2295,6 +2556,13 @@ usage() {
 
   装好后可直接用快捷命令:
     txnode                               # 进运维面板
+    txnode status                        # 同上，直接看状态
+
+  快捷命令没生效？
+    用 bash <(curl ...) 安装时，脚本自身路径是 /dev/fd/63 这类临时文件，
+    软链会在进程退出后失效。执行下面这条即可重建（会重新拉一份脚本到
+    /etc/txnode/deploy.sh 再软链过去）：
+      bash deploy.sh link
 
 HELP
 }
@@ -2360,6 +2628,8 @@ main() {
     pause)       do_pause ;;
     logs|log)    detect_deploy_mode; show_logs "" ;;
     reconfigure) do_reconfigure ;;
+    link)        do_link ;;
+    audit)       do_audit "$@" ;;
     validate)    do_validate ;;
     doctor)      do_doctor ;;
     backup)      do_backup ;;

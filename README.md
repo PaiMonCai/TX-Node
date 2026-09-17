@@ -49,13 +49,15 @@ txnode
 | 3 重启 | 改完配置后用这个 |
 | 4 启动 / 停止 | 子菜单：启动、停止、重启、暂停 |
 | 5 升级 | 拉最新镜像并重建（等价 `docker compose pull && up -d`） |
-| 6 修改配置 | 向导重填 / 手编 YAML / 改日志级别 / 开关审计 |
-| 7 配置校验与诊断 | 排错用，见下 |
-| 8 节点与机器管理 | 多节点 `nodes` 段增删、切换到 machine 模式 |
-| 9 备份 / 恢复 | 配置备份、回滚、清理旧备份 |
-| 10 卸载 | 移除容器 / 服务，**保留配置** |
-| 11 彻底清除 | 删容器、镜像、配置、systemd 单元（需手输 `PURGE` 确认） |
-| 12 从 install.sh 导入 | **仅检测到 `install.sh` 部署时出现**，见下 |
+| 6 修改配置 | 向导重填 / 手编 YAML / 改日志级别 |
+| 7 访问审计开关 | 一键开启 / 关闭审计上报，见下 |
+| 8 配置校验与诊断 | 排错用，见下 |
+| 9 节点与机器管理 | 多节点 `nodes` 段增删、切换到 machine 模式 |
+| 10 备份 / 恢复 | 配置备份、回滚、清理旧备份 |
+| 11 卸载 | 移除容器 / 服务，**保留配置** |
+| 12 彻底清除 | 删容器、镜像、配置、systemd 单元（需手输 `PURGE` 确认） |
+| 13 快捷命令 | 安装 / 重建 `txnode` 命令 |
+| 14 从 install.sh 导入 | **仅检测到 `install.sh` 部署时出现**，见下 |
 
 几个概念上的区别，别用错：
 
@@ -63,6 +65,44 @@ txnode
 - **暂停**：停止 **且** 取消开机自启（Docker 下会把 compose 的 `restart: always` 改成 `"no"`），适合长期下线。
 - **卸载**：去掉运行环境，配置留在 `/etc/txnode`，之后能重新装回来。
 - **彻底清除**：连配置一起删，**不可逆**。
+
+### 快捷命令 `txnode`
+
+装好后会注册 `txnode`，直接敲即进面板。菜单第 13 项「快捷命令」可随时重建它。
+
+```bash
+txnode                  # 进运维面板
+txnode status           # 直接看状态
+bash deploy.sh link     # 重建快捷命令
+```
+
+> **如果你是用 `bash <(curl -fsSL .../deploy.sh)` 装的，`txnode` 大概率是坏的。**
+> 那种方式运行时脚本自身路径是 `/dev/fd/63` 这类**进程替换的临时 fd**，进程一退出就消失，
+> 软链指向它就是个断链。执行 `bash deploy.sh link` 即可修复 —— 它会把脚本落到
+> `/etc/txnode/deploy.sh`（取不到时从网络重新拉一份），再把 `txnode` 指过去。
+
+### 访问审计开关
+
+菜单第 7 项，也可以非交互一键设置：
+
+```bash
+txnode audit            # 显示当前状态并交互式切换
+txnode audit on         # 一键开启（audit.enabled=true）
+txnode audit off        # 一键关闭
+txnode audit all on     # 全量上报：所有连接都记入面板访问日志
+txnode audit all off    # 仅上报命中规则的连接
+txnode audit status     # 只看不改
+```
+
+`report_all` 是最容易踩的坑，两种模式的取舍：
+
+| 设置 | 行为 | 适合 |
+|---|---|---|
+| `all on` | 所有连接都上报，不看规则 | 要全量访问日志（量可能很大） |
+| `all off` | **只**上报命中规则的连接 | 只要命中记录；**面板没配启用规则时一条都不会上报** |
+
+`all off` 却忘了配规则 = 审计开了但面板空空如也，且不报错（详见下方「最常见的坑」）。
+脚本会在该状态下于菜单里显式提醒。
 
 ### 从 `install.sh` 部署迁移（导入）
 
@@ -129,9 +169,12 @@ bash deploy.sh status        # 查看状态与配置摘要
 bash deploy.sh start|stop|restart|pause
 bash deploy.sh logs          # 实时日志
 bash deploy.sh reconfigure   # 修改配置
+bash deploy.sh audit on|off  # 一键开关访问审计
+bash deploy.sh audit all on|off  # 一键设置 report_all
 bash deploy.sh validate      # 配置校验
 bash deploy.sh doctor        # 环境与运行诊断
 bash deploy.sh backup|restore
+bash deploy.sh link          # 安装 / 重建快捷命令 txnode
 bash deploy.sh uninstall     # 卸载（保留配置）
 bash deploy.sh purge         # 彻底清除（不可逆）
 bash deploy.sh help          # 帮助

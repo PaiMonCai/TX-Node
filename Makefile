@@ -35,7 +35,7 @@ clean:
 
 # Build Docker image
 docker:
-	docker build -t tx-node:$(VERSION) -t xboard-node:latest .
+	docker build -t tx-node:$(VERSION) -t tx-node:latest -t xboard-node:latest .
 
 # Install to system (single node, legacy compat)
 install: build

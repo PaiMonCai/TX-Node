@@ -388,3 +388,9 @@ WARN [core] audit: report_all=false — only rule-matched targets are reported;
 TX-Node 保留 Xboard 面板协议及兼容配置字段。`xbctl` 与原生 `/etc/xboard-node` systemd 布局仅作为 legacy compatibility 保留；新的 Docker 运维入口是 `deploy.sh` / `txnode`。
 
 项目历史来源于 [cedar2025/Xboard-Node](https://github.com/cedar2025/Xboard-Node)。后续 TX-Node 版本独立维护和发布；上游修复仅按需审查、移植，不再整分支同步。详见 [`docs/standalone.md`](docs/standalone.md)。
+
+## License
+
+MPL-2.0。项目保留其历史来源及适用的上游版权与许可证声明。
+
+> **Disclaimer**: This project is for educational and learning purposes only.

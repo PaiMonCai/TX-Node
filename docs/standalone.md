@@ -31,7 +31,7 @@ Canonical TX-Node-facing identities are:
 - Docker image: `ghcr.io/paimoncai/tx-node`;
 - management entry point: `deploy.sh` / `txnode`.
 
-`xbctl` is intentionally **not** renamed to `txctl` yet. Its upgrade/service logic still models the legacy systemd installation, so presenting it as a new TX-Node CLI would be misleading and could pull binaries from the old upstream path.
+`xbctl` is intentionally **not** renamed to `txctl` yet. Its service/configuration model still targets the legacy systemd installation layout, while its release download source now points to `PaiMonCai/TX-Node`. A future `txctl` should be introduced only after the management CLI is redesigned around the current TX-Node deployment model.
 
 ## Go module identity
 

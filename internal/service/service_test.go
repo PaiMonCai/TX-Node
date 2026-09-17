@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cedar2025/xboard-node/internal/cert"
-	"github.com/cedar2025/xboard-node/internal/config"
-	"github.com/cedar2025/xboard-node/internal/kernel"
-	"github.com/cedar2025/xboard-node/internal/limiter"
-	"github.com/cedar2025/xboard-node/internal/model"
+	"github.com/PaiMonCai/TX-Node/internal/cert"
+	"github.com/PaiMonCai/TX-Node/internal/config"
+	"github.com/PaiMonCai/TX-Node/internal/kernel"
+	"github.com/PaiMonCai/TX-Node/internal/limiter"
+	"github.com/PaiMonCai/TX-Node/internal/model"
 	"golang.org/x/time/rate"
 )
 

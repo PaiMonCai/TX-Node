@@ -17,7 +17,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/cedar2025/xboard-node/internal/config"
+	"github.com/PaiMonCai/TX-Node/internal/config"
 	"gopkg.in/yaml.v3"
 )
 

@@ -51,4 +51,4 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add panel-plugin/AccessAudit/resources/views/admin.blade.php
           git commit -m 'fix(access-audit): clarify node identifiers'
-          git push origin HEAD:main
+          git push origin HEAD:refs/heads/main

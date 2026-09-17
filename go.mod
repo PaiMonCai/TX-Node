@@ -112,7 +112,7 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/gofrs/uuid/v5 v5.4.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.2.2 // indirect
-	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
+	github.com/golang/groupcache v0.0.0-20210331224750-ebf49471dced // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
@@ -184,7 +184,7 @@ require (
 	github.com/sagernet/cronet-go/lib/linux_mips64le v0.0.0-20260309101654-0cbdcfddded9 // indirect
 	github.com/sagernet/cronet-go/lib/linux_mipsle v0.0.0-20260309101654-0cbdcfddded9 // indirect
 	github.com/sagernet/cronet-go/lib/linux_mipsle_musl v0.0.0-20260309101654-0cbdcfddded9 // indirect
-	github.com/sagernet/cronet-go/lib/linux_riscv64 v0.0.0-20260309101654-5485872f601f // indirect
+	github.com/sagernet/cronet-go/lib/linux_riscv64 v0.0.0-20260309101654-0cbdcfddded9 // indirect
 	github.com/sagernet/cronet-go/lib/linux_riscv64_musl v0.0.0-20260309101654-0cbdcfddded9 // indirect
 	github.com/sagernet/cronet-go/lib/tvos_amd64_simulator v0.0.0-20260309101654-0cbdcfddded9 // indirect
 	github.com/sagernet/cronet-go/lib/tvos_arm64 v0.0.0-20260309101654-0cbdcfddded9 // indirect

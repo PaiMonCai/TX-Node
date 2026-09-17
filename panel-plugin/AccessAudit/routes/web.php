@@ -2,10 +2,13 @@
 
 use Illuminate\Support\Facades\Route;
 use Plugin\AccessAudit\Http\Controllers\AdminController;
+use Plugin\AccessAudit\Http\Controllers\AnalyticsController;
+use Plugin\AccessAudit\Http\Controllers\SettingsController;
 
 // 页面本体不挂 admin（页面内置管理员登录表单），数据/操作接口挂 admin
 Route::middleware(['web'])->group(function () {
     Route::get('/plugin/access-audit', [AdminController::class, 'page']);
+    Route::get('/plugin/access-audit/insights', [AnalyticsController::class, 'page']);
 });
 
 Route::middleware(['web', 'admin'])->group(function () {
@@ -18,6 +21,10 @@ Route::middleware(['web', 'admin'])->group(function () {
     Route::get('/plugin/access-audit/reports', [AdminController::class, 'reports']);
     Route::get('/plugin/access-audit/logs', [AdminController::class, 'logs']);
     Route::get('/plugin/access-audit/ban-logs', [AdminController::class, 'banLogs']);
+
+    Route::get('/plugin/access-audit/analytics', [AnalyticsController::class, 'data']);
+    Route::get('/plugin/access-audit/settings', [SettingsController::class, 'index']);
+    Route::post('/plugin/access-audit/settings', [SettingsController::class, 'update']);
 
     Route::post('/plugin/access-audit/ban', [AdminController::class, 'ban']);
     Route::post('/plugin/access-audit/unban', [AdminController::class, 'unban']);

@@ -27,6 +27,8 @@ build-all: build-linux build-linux-arm64
 
 # Run tests
 test:
+	go mod tidy
+	grep 'github.com/PaiMonCai/sing-box' go.sum || true
 	go test -v -race -count=1 ./internal/...
 
 # Clean build artifacts

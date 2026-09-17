@@ -167,6 +167,7 @@ require (
 	github.com/sagernet/cronet-go/lib/android_arm v0.0.0-20260309101654-0cbdcfddded9 // indirect
 	github.com/sagernet/cronet-go/lib/android_arm64 v0.0.0-20260309101654-0cbdcfddded9 // indirect
 	github.com/sagernet/cronet-go/lib/darwin_amd64 v0.0.0-20260309101654-0cbdcfddded9 // indirect
+	github.com/sagernet/cronet-go/lib/darwin_arm64 v0.0.0-20260309101654-0cbdcfddded9 // indirect
 	github.com/sagernet/cronet-go/lib/ios_amd64_simulator v0.0.0-20260309101654-0cbdcfddded9 // indirect
 	github.com/sagernet/cronet-go/lib/ios_arm64 v0.0.0-20260309101654-0cbdcfddded9 // indirect
 	github.com/sagernet/cronet-go/lib/ios_arm64_simulator v0.0.0-20260309101654-0cbdcfddded9 // indirect

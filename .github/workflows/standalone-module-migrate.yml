@@ -35,8 +35,11 @@ jobs:
           old='github.com/cedar2025/xboard-node'
           new='github.com/PaiMonCai/TX-Node'
 
+          # Refuse to run if the source identity is not exactly what we expect.
+          test "$(head -n 1 go.mod)" = "module ${old}"
+          sed -i "1c\\module ${new}" go.mod
+
           # Module directive plus every Go source/test import are changed together.
-          sed -i "1s#^module ${old}$#module ${new}#" go.mod
           while IFS= read -r -d '' file; do
             sed -i "s#${old}/internal#${new}/internal#g" "$file"
           done < <(find cmd internal -type f -name '*.go' -print0)

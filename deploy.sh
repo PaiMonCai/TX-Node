@@ -854,7 +854,7 @@ services:
   tx-node:
     image: $IMAGE
     container_name: $APP_NAME
-    restart: always
+    restart: unless-stopped
     network_mode: host
     volumes:
       - $CONFIG_FILE:/etc/xboard-node/config.yml:ro
@@ -1118,7 +1118,7 @@ services:
   tx-node:
     image: $IMAGE
     container_name: $APP_NAME
-    restart: always
+    restart: unless-stopped
     network_mode: host
     volumes:
       - $CONFIG_FILE:/etc/xboard-node/config.yml:ro
@@ -1141,18 +1141,13 @@ do_install() {
   # 装/重装同一条路：先清同名容器，避免 compose 名字冲突
   reset_container || fail "清理旧容器失败，安装中止"
 
-  info "启动..."
-  if ! dc up -d --force-recreate; then
-    fail "启动失败，请检查上方 compose 输出"
+  info "启动并验证..."
+  if ! guarded_compose_start 1; then
+    warn "容器未能稳定运行，已保持 restart=no，避免无限 Restarting"
+    show_logs 30
+    fail "启动失败，请修正配置后重新执行安装/启动"
   fi
-
-  sleep 5
-  if ! docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -q "$APP_NAME.*Up"; then
-    warn "容器未正常运行，最近日志："
-    show_logs 20
-    fail "启动失败，请根据上方日志排查"
-  fi
-  ok "容器运行中"
+  ok "容器运行中（restart=unless-stopped）"
 
   if [ "$AUDIT_ENABLED" = "true" ]; then
     sleep 5
@@ -1197,38 +1192,51 @@ self_path_is_persistent() {
 # 反而把本来能用的快捷命令搞坏。
 materialize_self_copy() {
   mkdir -p "$INSTALL_DIR" 2>/dev/null || true
+  local tmp="${SELF_COPY}.tmp.$$"
 
-  # 1) 已经有可用的持久化副本 → 直接用，不动它。
-  #    用 do_upgrade 做特征校验，避免把 curl 下到一半的 HTML 错误页当脚本。
+  # 1) 正常从持久化文件执行：优先复制当前脚本，确保副本就是本次运行的版本。
+  if self_path_is_persistent "$SELF_PATH" && [ "$SELF_PATH" != "$SELF_COPY" ]; then
+    if cp -f "$SELF_PATH" "$tmp" 2>/dev/null \
+      && [ -s "$tmp" ] \
+      && grep -q 'do_upgrade' "$tmp" 2>/dev/null; then
+      mv -f "$tmp" "$SELF_COPY"
+      chmod +x "$SELF_COPY" 2>/dev/null || true
+      return 0
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+  fi
+
+  # 2) bash <(curl ...) 场景：/dev/fd/* 不能长期保存，直接从 raw URL
+  #    刷新持久化副本。下载到临时文件，校验后原子替换，避免损坏旧副本。
+  if ! self_path_is_persistent "$SELF_PATH"; then
+    if command -v curl >/dev/null 2>&1; then
+      if curl -fsSL "$SCRIPT_RAW_URL" -o "$tmp" 2>/dev/null \
+        && [ -s "$tmp" ] \
+        && grep -q 'do_upgrade' "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$SELF_COPY"
+        chmod +x "$SELF_COPY" 2>/dev/null || true
+        return 0
+      fi
+      rm -f "$tmp" 2>/dev/null || true
+    fi
+    if command -v wget >/dev/null 2>&1; then
+      if wget -qO "$tmp" "$SCRIPT_RAW_URL" 2>/dev/null \
+        && [ -s "$tmp" ] \
+        && grep -q 'do_upgrade' "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$SELF_COPY"
+        chmod +x "$SELF_COPY" 2>/dev/null || true
+        return 0
+      fi
+      rm -f "$tmp" 2>/dev/null || true
+    fi
+  fi
+
+  # 3) 网络不可用时保留并继续使用已有有效副本。
   if [ -s "$SELF_COPY" ] && grep -q 'do_upgrade' "$SELF_COPY" 2>/dev/null; then
     chmod +x "$SELF_COPY" 2>/dev/null || true
     return 0
   fi
 
-  # 2) 自身路径可靠（正常 bash deploy.sh 场景）→ 复制自身，顺便刷新副本
-  if self_path_is_persistent "$SELF_PATH"; then
-    if cp -f "$SELF_PATH" "$SELF_COPY" 2>/dev/null && [ -s "$SELF_COPY" ]; then
-      chmod +x "$SELF_COPY" 2>/dev/null || true
-      return 0
-    fi
-  fi
-
-  # 3) 自身不可靠（curl|bash 场景）且没有副本 → 从网络取一份稳定的
-  if command -v curl >/dev/null 2>&1; then
-    if curl -fsSL "$SCRIPT_RAW_URL" -o "$SELF_COPY" 2>/dev/null && [ -s "$SELF_COPY" ]; then
-      chmod +x "$SELF_COPY" 2>/dev/null || true
-      return 0
-    fi
-  fi
-  if command -v wget >/dev/null 2>&1; then
-    if wget -qO "$SELF_COPY" "$SCRIPT_RAW_URL" 2>/dev/null && [ -s "$SELF_COPY" ]; then
-      chmod +x "$SELF_COPY" 2>/dev/null || true
-      return 0
-    fi
-  fi
-
-  # 拉不到就**保留**原来的副本（哪怕是旧的），删掉只会让命令彻底失效
-  [ -s "$SELF_COPY" ] && return 0
   return 1
 }
 
@@ -1253,6 +1261,13 @@ install_cli_link() {
   fi
   hint "软链失败，可继续用: bash $target"
   return 1
+}
+
+# 已部署机器进入菜单时自动刷新脚本副本并修复 txnode 命令。
+# 失败只给菜单继续运行，不因为快捷命令问题中断运维。
+ensure_cli_link() {
+  install_cli_link >/dev/null 2>&1 || true
+  return 0
 }
 
 # 显式重建快捷命令（也可修复旧的坏软链）
@@ -1393,24 +1408,89 @@ do_status() {
 # ════════════════════════════════════════════════════════════════════
 #  动作：启停 / 重启
 # ════════════════════════════════════════════════════════════════════
+compose_set_restart_policy() {
+  local policy="$1" rendered="$1"
+  # restart: no 在 YAML 里会被解析成布尔 false，必须加引号才等价于 "no"
+  [ "$policy" = "no" ] && rendered='"no"'
+  if [ -f "$COMPOSE_FILE" ] && grep -qE '^[[:space:]]*restart:' "$COMPOSE_FILE" 2>/dev/null; then
+    sed -i -E "s|^([[:space:]]*)restart:.*$|\1restart: ${rendered}|" "$COMPOSE_FILE"
+  fi
+}
+
+runtime_set_restart_policy() {
+  local policy="$1"
+  docker update --restart="$policy" "$APP_NAME" >/dev/null 2>&1 || true
+}
+
+wait_container_stable() {
+  local seconds="${1:-5}" i
+  i=0
+  while [ "$i" -lt "$seconds" ]; do
+    sleep 1
+    [ "$(container_state)" = "running" ] || return 1
+    i=$((i+1))
+  done
+  return 0
+}
+
+promote_restart_policy() {
+  compose_set_restart_policy "unless-stopped"
+  runtime_set_restart_policy "unless-stopped"
+}
+
+# 安全启动：先用 restart=no 起，确认连续稳定后再提升为 unless-stopped。
+# 这样坏配置不会陷入 Restarting 死循环。
+guarded_compose_start() {
+  local recreate="${1:-0}"
+
+  # 首次验证阶段禁用自动重启，坏配置不会形成 Restarting 死循环。
+  compose_set_restart_policy "no"
+
+  if [ "$recreate" = "1" ]; then
+    dc up -d --force-recreate || {
+      # 同名容器可能不属于当前 compose 项目（手工 docker run / 换过安装目录），
+      # 直接 up 会报 "container name is already in use"，先清理再重建。
+      warn "重建失败，尝试清理同名容器后重试"
+      reset_container || return 1
+      dc up -d --force-recreate || return 1
+    }
+  else
+    dc up -d || {
+      warn "启动失败，尝试清理同名容器后重试"
+      reset_container || return 1
+      dc up -d || return 1
+    }
+  fi
+
+  if wait_container_stable 5; then
+    promote_restart_policy
+    return 0
+  fi
+
+  runtime_set_restart_policy "no"
+  docker stop "$APP_NAME" >/dev/null 2>&1 || true
+  return 1
+}
+
 do_start() {
   detect_deploy_mode
   ! is_installed && legacy_hint_or_fail "启动"
   info "启动..."
-  if ! dc up -d; then
-    # 常见失败：同名容器不属于当前 compose 项目（手工 docker run / 换过安装目录）
-    warn "直接启动失败，尝试清理同名容器后重试"
-    reset_container || fail "清理同名容器失败，请手动执行: docker rm -f $APP_NAME"
-    dc up -d || fail "启动失败，请检查上方 compose 输出"
+
+  if ! guarded_compose_start 0; then
+    warn "容器启动后未能稳定运行，已关闭自动重启，避免 Restarting 循环"
+    show_logs 30
+    fail "启动失败，请修正配置后再执行: txnode start"
   fi
-  sleep 3
-  ok "已启动"; do_status
+
+  ok "已启动（restart=unless-stopped）"
+  do_status
 }
 
 do_stop() {
   detect_deploy_mode
   ! is_installed && legacy_hint_or_fail "停止"
-  if ! confirm "确认停止 tx-node？（节点将下线，面板会显示离线）" "n"; then
+  if ! confirm "确认停止 tx-node？（节点将下线；手动停止后不会被自动拉起）" "n"; then
     info "已取消"; return 0
   fi
   info "停止..."
@@ -1421,45 +1501,43 @@ do_stop() {
 do_restart() {
   detect_deploy_mode
   ! is_installed && legacy_hint_or_fail "重启"
-  info "重启..."
-  dc restart
-  sleep 3
-  ok "已重启"; do_status
-}
+  info "安全重启..."
 
-# 暂停 = 停止 + 禁止开机自启（区别于单纯停止）
-do_pause() {
-  detect_deploy_mode
-  ! is_installed && legacy_hint_or_fail "暂停"
-  echo
-  info "「暂停」= 停止服务 且 取消开机自启"
-  hint "「停止」只是本次停掉，重启机器后仍会自动拉起。"
-  if ! confirm "确认暂停 tx-node？" "n"; then
-    info "已取消"; return 0
-  fi
-  dc stop
-  # compose 里 restart: always 会让 docker 恢复时自动启动；改文件最稳妥。
-  # 要同时兼容 restart: always / "always" / 'always' 三种写法。
-  if grep -qE 'restart:[[:space:]]*["'"'"']?always["'"'"']?' "$COMPOSE_FILE" 2>/dev/null; then
-    sed -i -E 's/restart:[[:space:]]*["'"'"']?always["'"'"']?/restart: "no"/' "$COMPOSE_FILE"
-    ok "已将 compose 的 restart 策略改为 \"no\"（随系统自动启动已关闭）"
+  runtime_set_restart_policy "no"
+
+  if [ "$(container_state)" = "absent" ]; then
+    if ! guarded_compose_start 1; then
+      warn "容器未能稳定启动，已保持 restart=no"
+      show_logs 30
+      fail "重启失败，请修正配置后执行: txnode start"
+    fi
   else
-    hint "compose 里未发现 restart: always，跳过自启策略改写"
+    if ! docker restart "$APP_NAME" >/dev/null; then
+      fail "docker restart 失败"
+    fi
+    if wait_container_stable 5; then
+      promote_restart_policy
+    else
+      runtime_set_restart_policy "no"
+      docker stop "$APP_NAME" >/dev/null 2>&1 || true
+      warn "重启后进程未能稳定运行，已停止容器并关闭自动重启"
+      show_logs 30
+      fail "重启失败，请检查配置/日志"
+    fi
   fi
-  ok "已暂停"
-  hint "恢复请用菜单里的「启动」（会自动恢复自启策略）"
+
+  ok "已重启（restart=unless-stopped）"
+  do_status
 }
 
-# 启动时恢复被 do_pause 改掉的策略
+# 向后兼容旧命令：pause 不再修改 compose 状态机，等价于 stop。
+do_pause() {
+  warn "pause 已合并为 stop；不会再修改 compose 的 restart 配置"
+  do_stop
+}
+
 restore_autostart() {
-  # 自行探测：不依赖调用方是否已经填过 DEPLOY_MODE
-  detect_deploy_mode
-  [ "$DEPLOY_MODE" = "docker" ] || return 0
-  if grep -qE 'restart:[[:space:]]*["'"'"']?no["'"'"']?' "$COMPOSE_FILE" 2>/dev/null; then
-    sed -i -E 's/restart:[[:space:]]*["'"'"']?no["'"'"']?/restart: always/' "$COMPOSE_FILE"
-    info "已恢复 compose 的 restart: always"
-    dc up -d >/dev/null 2>&1 || true
-  fi
+  return 0
 }
 
 # ════════════════════════════════════════════════════════════════════
@@ -1479,19 +1557,13 @@ do_upgrade() {
       # 手工 docker run 出来的同名容器会让 up 报 "container name is already in use"。
       reset_container || fail "清理旧容器失败，升级中止（配置未改动）"
 
-      info "重建容器..."
-      # --force-recreate 保证即使镜像 tag 未变也会按新配置重建
-      if ! dc up -d --force-recreate; then
-        fail "重建失败，请检查上方 compose 输出"
-      fi
-
-      sleep 5
-      if docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -q "$APP_NAME.*Up"; then
-        ok "升级完成，容器运行中"
+      info "安全重建容器..."
+      if guarded_compose_start 1; then
+        ok "升级完成，容器运行中（restart=unless-stopped）"
       else
-        warn "容器未正常运行，最近日志："
-        show_logs 20
-        fail "升级后启动失败。排查后可重试: txnode upgrade"
+        warn "升级后的容器未能稳定运行，已关闭自动重启"
+        show_logs 30
+        fail "升级后启动失败。修正后可重试: txnode upgrade"
       fi
       ;;
     legacy)
@@ -1613,7 +1685,10 @@ audit_read() {
     inaudit && /^[[:space:]]*report_all:/ && !d {sub(/.*report_all:[[:space:]]*/,""); gsub(/[^a-z]/,""); print; d=1}
     /^[^[:space:]#]/ && !/^audit:/ {inaudit=0}
   ' "$CONFIG_FILE" 2>/dev/null || true)
-  printf '%s %s' "${aud:-false}" "${rpt:-false}"
+  # 必须以换行结尾：调用方用 `read ... < <(audit_read)` 取值，
+  # 而 read 遇到「无换行结尾的输入」会**返回非 0**（变量其实已赋值成功），
+  # 在 set -e 下会当场把整个脚本杀掉，且没有任何输出。
+  printf '%s %s\n' "${aud:-false}" "${rpt:-false}"
 }
 
 # 写入审计开关。参数：$1=enabled(可空) $2=report_all(可空)
@@ -1685,7 +1760,9 @@ do_audit() {
 
   local sub="${1:-}" val="${2:-}"
   local cur_aud cur_rpt
-  read -r cur_aud cur_rpt < <(audit_read)
+  # `|| true` 是双保险：即使 audit_read 因故没输出，read 返回非 0 也不该
+  # 让 set -e 把脚本杀掉（后面的 :-false 兜底会补上默认值）。
+  read -r cur_aud cur_rpt < <(audit_read) || true
   cur_aud="${cur_aud:-false}"; cur_rpt="${cur_rpt:-false}"
 
   # ── 非交互：一键设置 ──
@@ -2408,10 +2485,9 @@ menu_power() {
     echo
     echo -e "  ${BOLD}启动 / 停止${NC}"
     echo
-    echo -e "   1) 启动                    ${DIM}并恢复开机自启${NC}"
-    echo -e "   2) 停止                    ${DIM}本次停掉，重启机器后仍会自启${NC}"
-    echo -e "   3) 重启                    ${DIM}配置改动生效${NC}"
-    echo -e "   4) 暂停                    ${DIM}停止 + 取消开机自启（长期下线）${NC}"
+    echo -e "   1) 启动                    ${DIM}启动成功后启用 unless-stopped${NC}"
+    echo -e "   2) 停止                    ${DIM}手动停止后保持停止${NC}"
+    echo -e "   3) 安全重启                ${DIM}失败时自动停止，避免重启循环${NC}"
     echo -e "   0) 返回"
     echo
     read -r -p "  请选择: " c || return 0
@@ -2419,7 +2495,6 @@ menu_power() {
       1) do_start; pause ;;
       2) do_stop; pause ;;
       3) do_restart; pause ;;
-      4) do_pause; pause ;;
       0) return ;;
       *) warn "无效选项"; sleep 1 ;;
     esac
@@ -2518,7 +2593,7 @@ usage() {
     start          启动
     stop           停止
     restart        重启
-    pause          暂停（停止 + 取消开机自启）
+    pause          兼容旧命令；现在等价于 stop
     logs           查看实时日志
     reconfigure    修改配置
     audit          访问审计开关（见下方）
@@ -2575,6 +2650,10 @@ main() {
     [ "$(id -u)" -eq 0 ] || fail "请用 root 运行（或 sudo bash $0）"
     [ -d /etc ] || fail "仅支持 Linux"
     detect_deploy_mode
+    # 已部署机器：在线打开菜单时自动刷新持久化脚本并自愈 txnode 快捷命令。
+    if is_installed; then
+      ensure_cli_link
+    fi
     # 检测到 install.sh 部署且本机尚无 txnode → 主动询问是否导入
     if detect_legacy_install && ! is_installed; then
       clear 2>/dev/null || true

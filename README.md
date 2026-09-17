@@ -47,7 +47,7 @@ txnode
 | 1 查看状态 | 运行状态、配置摘要、健康检查 |
 | 2 查看日志 | 实时跟随（Ctrl+C 退出） |
 | 3 重启 | 改完配置后用这个 |
-| 4 启动 / 停止 | 子菜单：启动、停止、重启、暂停 |
+| 4 启动 / 停止 | 子菜单：启动、停止、安全重启 |
 | 5 升级 | 拉最新镜像并重建（等价 `docker compose pull && up -d`） |
 | 6 修改配置 | 向导重填 / 手编 YAML / 改日志级别 |
 | 7 访问审计开关 | 一键开启 / 关闭审计上报，见下 |
@@ -61,8 +61,9 @@ txnode
 
 几个概念上的区别，别用错：
 
-- **停止**：本次停掉，机器重启后仍会自启。
-- **暂停**：停止 **且** 取消开机自启（Docker 下会把 compose 的 `restart: always` 改成 `"no"`），适合长期下线。
+- **停止**：手动停掉后**保持停止**，机器重启后不会被自动拉起（compose 用 `restart: unless-stopped`）。
+- **安全重启**：先把容器重启策略降为 `no` 再重启，确认连续稳定 5 秒后才恢复 `unless-stopped`；若启动后立刻崩溃，会自动停掉容器并关掉自动重启，**不会陷入 Restarting 死循环**，同时打印最近日志。
+- **pause**：旧命令保留作兼容，现在**等价于 stop**（不再改写 compose 的 restart 配置）。
 - **卸载**：去掉运行环境，配置留在 `/etc/txnode`，之后能重新装回来。
 - **彻底清除**：连配置一起删，**不可逆**。
 
@@ -245,7 +246,7 @@ EOF
 **2. 启动**
 
 ```bash
-docker run -d --restart=always --network=host \
+docker run -d --restart=unless-stopped --network=host \
   --name tx-node \
   -v /etc/txnode/config.yml:/etc/xboard-node/config.yml \
   ghcr.io/paimoncai/tx-node:latest
@@ -266,7 +267,7 @@ services:
   tx-node:
     image: ghcr.io/paimoncai/tx-node:latest
     container_name: tx-node
-    restart: always
+    restart: unless-stopped
     network_mode: host
     volumes:
       - ./config.yml:/etc/xboard-node/config.yml

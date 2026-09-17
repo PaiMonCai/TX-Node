@@ -5,104 +5,447 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>访问审计</title>
   <style>
-    :root { --blue: #2563eb; --red: #dc2626; --gray: #4b5563; --line: #e5e7eb; --bg: #f7f8fa; }
+    /* ══════════════════════════════════════════════════════════
+       设计 token
+       所有组件类统一 aa- 前缀，避免与面板宿主页样式互相污染。
+       参考图配色：主色蓝、成功绿、警告琥珀、危险红，卡片白底细边框。
+       ══════════════════════════════════════════════════════════ */
+    :root {
+      --aa-bg: #f7f8fa;
+      --aa-surface: #ffffff;
+      --aa-line: #e5e7eb;
+      --aa-line-strong: #d3d1c7;
+      --aa-text: #1f2937;
+      --aa-text-2: #5f5e5a;
+      --aa-text-3: #888780;
+
+      --aa-primary: #185fa5;
+      --aa-primary-soft: #e6f1fb;
+      --aa-primary-line: #85b7eb;
+      --aa-success: #0f6e56;
+      --aa-success-soft: #e1f5ee;
+      --aa-success-mid: #1d9e75;
+      --aa-warn: #ba7517;
+      --aa-warn-soft: #faeeda;
+      --aa-warn-mid: #ef9f27;
+      --aa-danger: #a32d2d;
+      --aa-danger-soft: #fcebeb;
+      --aa-danger-mid: #e24b4a;
+      --aa-purple: #534ab7;
+      --aa-purple-soft: #eeedfe;
+      --aa-gray-soft: #f1efe8;
+
+      --aa-r-card: 10px;
+      --aa-r-ctrl: 6px;
+      --aa-gap: 16px;
+    }
+
     * { box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; background: var(--bg); color: #1f2937; }
-    .wrap { max-width: 1080px; margin: 0 auto; padding: 24px; }
-    .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
-    input, select, textarea { padding: 9px 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; }
-    input:focus, select:focus, textarea:focus { outline: 2px solid #bfdbfe; border-color: var(--blue); }
-    textarea { width: 100%; min-height: 72px; font-family: inherit; }
-    button { padding: 9px 16px; border: 0; border-radius: 8px; background: var(--blue); color: #fff; cursor: pointer; font-size: 14px; }
-    button:hover { filter: brightness(1.08); }
-    button.danger { background: var(--red); }
-    button.secondary { background: var(--gray); }
-    button.ghost { background: #e5e7eb; color: #374151; }
-    button.small { padding: 4px 10px; font-size: 12px; }
-    button:disabled { opacity: .5; cursor: not-allowed; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { border-bottom: 1px solid var(--line); padding: 9px 10px; text-align: left; font-size: 13px; }
-    th { color: #6b7280; font-weight: 600; white-space: nowrap; }
-    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .hint { font-size: 12px; color: #6b7280; }
-    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; white-space: nowrap; }
-    .badge.ok { background: #dcfce7; color: #166534; }
-    .badge.no { background: #fee2e2; color: #991b1b; }
-    .badge.warn { background: #fef9c3; color: #854d0e; }
-    .msg { margin-top: 10px; padding: 10px 14px; border-radius: 8px; font-size: 14px; display: none; }
-    .msg.ok { display: block; background: #dcfce7; color: #166534; }
-    .msg.err { display: block; background: #fee2e2; color: #991b1b; }
-    .mono { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
 
-    /* 顶栏 */
-    .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
-    .topbar h1 { font-size: 20px; margin: 0; display: flex; align-items: center; gap: 10px; }
-    .topbar .user { font-size: 13px; color: #6b7280; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      margin: 0;
+      background: var(--aa-bg);
+      color: var(--aa-text);
+      font-size: 13px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
 
-    /* 统计卡片 */
-    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
-    .stat { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
-    .stat .num { font-size: 26px; font-weight: 700; }
-    .stat .label { font-size: 12px; color: #6b7280; margin-top: 2px; }
-    .stat.red .num { color: var(--red); }
-    .stat.blue .num { color: var(--blue); }
+    .aa-wrap { max-width: 1180px; margin: 0 auto; padding: 24px; }
 
-    /* Tab */
-    .tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--line); margin-bottom: 16px; }
-    .tabs button { background: none; color: #6b7280; border-radius: 8px 8px 0 0; padding: 10px 18px; font-size: 14px; border-bottom: 2px solid transparent; margin-bottom: -2px; }
-    .tabs button:hover { color: #111; filter: none; }
-    .tabs button.active { color: var(--blue); border-bottom-color: var(--blue); font-weight: 600; }
-    .pane { display: none; }
-    .pane.active { display: block; }
+    /* ── 卡片 ── */
+    .aa-card {
+      background: var(--aa-surface);
+      border: 1px solid var(--aa-line);
+      border-radius: var(--aa-r-card);
+      padding: 18px 20px;
+      margin-bottom: var(--aa-gap);
+    }
+    .aa-card-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; margin-bottom: 14px; flex-wrap: wrap;
+    }
+    .aa-card-title { font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+    .aa-card-title .aa-ico { color: var(--aa-text-3); display: inline-flex; }
 
-    /* 规则表单 */
-    .rule-form { display: grid; grid-template-columns: 1fr 170px 110px 120px 1fr auto; gap: 10px; align-items: center; }
-    .rule-form .full { grid-column: 1 / -1; }
-    @media (max-width: 860px) { .rule-form { grid-template-columns: 1fr 1fr; } }
+    /* ── 表单控件（统一规格）── */
+    .aa-wrap input:not([type=checkbox]):not([type=radio]),
+    .aa-wrap select,
+    .aa-wrap textarea {
+      padding: 7px 11px;
+      border: 1px solid var(--aa-line-strong);
+      border-radius: var(--aa-r-ctrl);
+      font-size: 13px;
+      font-family: inherit;
+      color: var(--aa-text);
+      background: var(--aa-surface);
+      height: 34px;
+      transition: border-color .12s, box-shadow .12s;
+    }
+    .aa-wrap textarea { height: auto; min-height: 76px; width: 100%; resize: vertical; }
+    .aa-wrap input:focus, .aa-wrap select:focus, .aa-wrap textarea:focus {
+      outline: none;
+      border-color: var(--aa-primary-line);
+      box-shadow: 0 0 0 3px var(--aa-primary-soft);
+    }
+    .aa-wrap input::placeholder { color: var(--aa-text-3); }
+    .aa-wrap select { cursor: pointer; }
 
-    /* 登录 */
-    .login-card { max-width: 380px; margin: 12vh auto 0; }
-    .login-card h2 { margin-top: 0; }
-    .login-card input { width: 100%; margin-bottom: 10px; }
-    .login-card button { width: 100%; }
+    /* ── 按钮 ── */
+    .aa-btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      height: 34px; padding: 0 15px;
+      border: 1px solid transparent;
+      border-radius: var(--aa-r-ctrl);
+      font-size: 13px; font-family: inherit; font-weight: 400;
+      cursor: pointer; white-space: nowrap;
+      background: var(--aa-primary); color: #fff;
+      transition: filter .12s, background .12s;
+    }
+    .aa-btn:hover:not(:disabled) { filter: brightness(1.1); }
+    .aa-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .aa-btn--danger { background: var(--aa-danger); }
+    .aa-btn--secondary { background: var(--aa-text-2); }
+    .aa-btn--ghost { background: var(--aa-surface); color: var(--aa-text-2); border-color: var(--aa-line-strong); }
+    .aa-btn--ghost:hover:not(:disabled) { background: var(--aa-gray-soft); filter: none; }
+    .aa-btn--sm { height: 28px; padding: 0 10px; font-size: 12px; }
 
-    /* 编辑态行高亮 */
-    tr.editing td { background: #eff6ff; }
+    /* ── 徽章 ── */
+    .aa-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 2px 9px; border-radius: 999px;
+      font-size: 12px; white-space: nowrap; line-height: 1.7;
+    }
+    .aa-badge--ok    { background: var(--aa-success-soft); color: var(--aa-success); }
+    .aa-badge--no    { background: var(--aa-danger-soft);  color: var(--aa-danger); }
+    .aa-badge--warn  { background: var(--aa-warn-soft);    color: var(--aa-warn); }
+    .aa-badge--info  { background: var(--aa-primary-soft); color: var(--aa-primary); }
+    .aa-badge--mute  { background: var(--aa-gray-soft);    color: var(--aa-text-2); }
+    /* 状态圆点：视觉上比纯文字徽章更轻，用于表格内高频出现 */
+    .aa-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex: none; }
+    .aa-dot--ok { background: var(--aa-success-mid); }
+    .aa-dot--no { background: var(--aa-danger-mid); }
+    .aa-dot--warn { background: var(--aa-warn-mid); }
+
+    /* ── 页头 ── */
+    .aa-pagehead {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 16px; margin-bottom: 18px; flex-wrap: wrap;
+    }
+    .aa-pagehead-main { display: flex; gap: 12px; align-items: flex-start; }
+    .aa-pagehead-ico {
+      width: 40px; height: 40px; flex: none;
+      border-radius: 10px;
+      background: var(--aa-primary);
+      display: flex; align-items: center; justify-content: center;
+      color: #fff;
+    }
+    .aa-pagehead h1 { font-size: 17px; font-weight: 500; margin: 0 0 2px; line-height: 1.4; }
+    .aa-pagehead p { font-size: 12px; color: var(--aa-text-3); margin: 0; }
+    .aa-pagehead-meta { font-size: 12px; color: var(--aa-text-3); padding-top: 4px; white-space: nowrap; }
+
+    /* ── 统计卡 ── */
+    .aa-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-bottom: var(--aa-gap);
+    }
+    .aa-stat {
+      background: var(--aa-surface);
+      border: 1px solid var(--aa-line);
+      border-radius: var(--aa-r-card);
+      padding: 14px 16px;
+      min-width: 0;
+    }
+    .aa-stat-top { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; }
+    .aa-stat-ico {
+      width: 22px; height: 22px; flex: none; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .aa-stat-ico--blue   { background: var(--aa-primary-soft); color: var(--aa-primary); }
+    .aa-stat-ico--green  { background: var(--aa-success-soft); color: var(--aa-success); }
+    .aa-stat-ico--amber  { background: var(--aa-warn-soft);    color: var(--aa-warn); }
+    .aa-stat-ico--red    { background: var(--aa-danger-soft);  color: var(--aa-danger); }
+    .aa-stat-ico--purple { background: var(--aa-purple-soft);  color: var(--aa-purple); }
+    .aa-stat-label { font-size: 12px; color: var(--aa-text-3); }
+    .aa-stat-num {
+      font-size: 24px; font-weight: 500; line-height: 1.25;
+      color: var(--aa-text); font-variant-numeric: tabular-nums;
+    }
+    .aa-stat-num small { font-size: 14px; color: var(--aa-text-3); font-weight: 400; }
+    .aa-stat-foot {
+      margin-top: 6px; font-size: 12px; min-height: 20px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .aa-stat-foot .aa-up { color: var(--aa-danger); }     /* 命中/封禁升高＝坏事，用红 */
+    .aa-stat-foot .aa-down { color: var(--aa-success); }  /* 降低＝好事，用绿 */
+    .aa-stat-foot .aa-mute { color: var(--aa-text-3); }
+    .aa-spark { display: block; width: 100%; height: 30px; margin: 2px 0 4px; }
+
+    /* 进度条 */
+    .aa-bar { height: 4px; border-radius: 999px; background: var(--aa-gray-soft); overflow: hidden; margin-top: 8px; }
+    .aa-bar > i { display: block; height: 100%; border-radius: 999px; background: var(--aa-primary); transition: width .3s; }
+    .aa-bar--green > i { background: var(--aa-success-mid); }
+    .aa-bar--purple > i { background: var(--aa-purple); }
+
+    /* ── Tab ── */
+    .aa-tabs {
+      display: flex; gap: 2px; overflow-x: auto;
+      border-bottom: 1px solid var(--aa-line);
+      margin-bottom: var(--aa-gap);
+    }
+    .aa-tabs button {
+      background: none; border: 0; border-bottom: 2px solid transparent;
+      color: var(--aa-text-3); font-size: 13px; font-family: inherit;
+      padding: 9px 16px; margin-bottom: -1px; cursor: pointer;
+      white-space: nowrap; transition: color .12s, border-color .12s;
+    }
+    .aa-tabs button:hover { color: var(--aa-text); }
+    .aa-tabs button.active { color: var(--aa-primary); border-bottom-color: var(--aa-primary); font-weight: 500; }
+    .aa-pane { display: none; }
+    .aa-pane.active { display: block; }
+
+    /* ── 筛选区 ── */
+    .aa-filters { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+    .aa-filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .aa-filter-row .aa-spacer { flex: 1 1 auto; }
+    .aa-field { display: flex; align-items: center; gap: 7px; min-width: 0; }
+    .aa-field > label { font-size: 12px; color: var(--aa-text-3); white-space: nowrap; }
+    .aa-sep { color: var(--aa-text-3); font-size: 12px; }
+
+    /* ── 提示条 ── */
+    .aa-hint {
+      font-size: 12px; color: var(--aa-text-3);
+      background: var(--aa-bg);
+      border-radius: var(--aa-r-ctrl);
+      padding: 8px 12px; margin-bottom: 14px; line-height: 1.7;
+    }
+    .aa-hint b { color: var(--aa-text-2); font-weight: 500; }
+    .aa-hint code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px; background: var(--aa-surface);
+      padding: 1px 5px; border-radius: 4px; border: 1px solid var(--aa-line);
+    }
+
+    /* ── 表格 ── */
+    .aa-tablebox { overflow-x: auto; border: 1px solid var(--aa-line); border-radius: var(--aa-r-card); }
+    .aa-wrap table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+    .aa-wrap thead th {
+      background: var(--aa-bg);
+      color: var(--aa-text-3);
+      font-weight: 500; font-size: 12px;
+      text-align: left; white-space: nowrap;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--aa-line);
+      position: sticky; top: 0; z-index: 1;
+    }
+    .aa-wrap tbody td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--aa-line);
+      vertical-align: middle;
+    }
+    .aa-wrap tbody tr:last-child td { border-bottom: 0; }
+    .aa-wrap tbody tr:nth-child(even) { background: #fafbfc; }
+    .aa-wrap tbody tr:hover { background: var(--aa-primary-soft); }
+    .aa-wrap tbody tr.editing { background: var(--aa-warn-soft); }
+    .aa-empty { text-align: center; color: var(--aa-text-3); padding: 28px 12px !important; }
+
+    /* 单元格辅助 */
+    .aa-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    .aa-nowrap { white-space: nowrap; }
+    .aa-muted { color: var(--aa-text-3); }
+    .aa-target {
+      max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      display: inline-block; vertical-align: middle;
+    }
+    /* 节点名前的色块：按 node_id 稳定取色，扫表时靠颜色快速分区 */
+    .aa-nodecell { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+    .aa-nodebar { width: 4px; height: 15px; border-radius: 2px; flex: none; }
+    .aa-nodeid { font-size: 11px; color: var(--aa-text-3); font-family: ui-monospace, monospace; }
+    .aa-actions { display: flex; gap: 6px; white-space: nowrap; }
+
+    /* 表格列宽策略：状态/操作这类短列收窄，把宽度让给时间与目标 */
+.aa-tablebox table { table-layout: auto; }
+.aa-col-right { text-align: right; }
+.aa-tablebox td .aa-target { max-width: 300px; }
+
+/* ── 分页器 ── */
+    .aa-pager {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; flex-wrap: wrap; margin-top: 14px;
+    }
+    .aa-pager-info { font-size: 12px; color: var(--aa-text-3); }
+    .aa-pager-pages { display: flex; align-items: center; gap: 4px; }
+    .aa-page {
+      min-width: 30px; height: 30px; padding: 0 8px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border: 1px solid var(--aa-line-strong); border-radius: var(--aa-r-ctrl);
+      background: var(--aa-surface); color: var(--aa-text-2);
+      font-size: 12px; font-family: inherit; cursor: pointer;
+    }
+    .aa-page:hover:not(:disabled):not(.active) { background: var(--aa-gray-soft); }
+    .aa-page.active { background: var(--aa-primary); border-color: var(--aa-primary); color: #fff; font-weight: 500; }
+    .aa-page:disabled { opacity: .4; cursor: not-allowed; }
+    .aa-page--dots { border: 0; background: none; cursor: default; color: var(--aa-text-3); }
+
+    /* ── 消息 ── */
+    .aa-msg { margin-top: 10px; padding: 9px 13px; border-radius: var(--aa-r-ctrl); font-size: 13px; display: none; }
+    .aa-msg.ok  { display: block; background: var(--aa-success-soft); color: var(--aa-success); }
+    .aa-msg.err { display: block; background: var(--aa-danger-soft);  color: var(--aa-danger); }
+
+    /* ── 规则表单 ──
+       两段式布局：第一行 5 个字段（名称/类型/阈值/窗口/备注 + 按钮），
+       第二行整行 textarea。之所以不把 textarea 塞进同一个 grid，
+       是因为它跨全列会把按钮挤到第三行，视觉上很突兀。 */
+    .aa-formgrid {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr 0.85fr 0.85fr 1.1fr auto;
+      gap: 10px; align-items: center;
+    }
+    .aa-formgrid .aa-full { grid-column: 1 / -1; }
+    .aa-formgrid input, .aa-formgrid select { width: 100%; min-width: 0; }
+    .aa-editbar { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+
+    /* ── 登录 ── */
+    .aa-login { max-width: 380px; margin: 12vh auto 0; }
+    .aa-login h2 { margin: 0 0 4px; font-size: 17px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+    .aa-login .aa-hint { margin: 10px 0 14px; }
+    .aa-login input { width: 100%; margin-bottom: 10px; }
+    .aa-login .aa-btn { width: 100%; }
+
+    /* 顶栏用户区 */
+    .aa-userbar { display: flex; align-items: center; gap: 10px; }
+    .aa-avatar {
+      width: 28px; height: 28px; border-radius: 50%;
+      background: var(--aa-primary-soft); color: var(--aa-primary);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 500;
+    }
+
+    /* ── 响应式 ── */
+    @media (max-width: 860px) {
+      .aa-wrap { padding: 16px; }
+      .aa-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      /* 规则表单：名称+类型一行，阈值+窗口一行，备注+按钮一行 */
+      .aa-formgrid { grid-template-columns: 1fr 1fr; }
+      .aa-pagehead-meta { display: none; }
+      .aa-filter-row .aa-field { flex: 1 1 46%; }
+      .aa-filter-row .aa-spacer { display: none; }
+      .aa-filter-row .aa-field input, .aa-filter-row .aa-field select { width: 100%; }
+    }
+    @media (max-width: 560px) {
+      .aa-stats { grid-template-columns: minmax(0, 1fr); }
+      .aa-formgrid { grid-template-columns: 1fr; }
+      .aa-pager { justify-content: center; }
+      .aa-filter-row .aa-field { flex: 1 1 100%; }
+    }
   </style>
 </head>
 <body>
 
 <!-- 登录 -->
-<div class="wrap" id="loginWrap" style="display:none">
-  <div class="card login-card">
-    <h2>🛡️ 访问审计</h2>
-    <div class="hint" style="margin-bottom:16px">使用 Xboard 管理员账号登录。登录状态保存在本浏览器（localStorage），点「退出」清除。</div>
+<div class="aa-wrap" id="loginWrap" style="display:none">
+  <div class="aa-card aa-login">
+    <h2>
+      <span class="aa-pagehead-ico" style="width:28px;height:28px;border-radius:8px">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      </span>
+      访问审计
+    </h2>
+    <div class="aa-hint">使用 Xboard 管理员账号登录。登录状态保存在本浏览器（localStorage），点「退出」清除。</div>
     <input id="loginEmail" type="email" placeholder="管理员邮箱" autocomplete="username" />
     <input id="loginPassword" type="password" placeholder="密码" autocomplete="current-password" onkeydown="if(event.key==='Enter')login()" />
-    <button onclick="login()">登 录</button>
-    <div id="loginMsg" class="msg"></div>
+    <button class="aa-btn" onclick="login()">登 录</button>
+    <div id="loginMsg" class="aa-msg"></div>
   </div>
 </div>
 
 <!-- 工作区 -->
-<div class="wrap" id="workspace" style="display:none">
-  <div class="topbar">
-    <h1>🛡️ 访问审计</h1>
-    <div class="row">
-      <span class="user" id="userLabel"></span>
-      <button class="ghost small" onclick="logout()">退出</button>
+<div class="aa-wrap" id="workspace" style="display:none">
+
+  <div class="aa-pagehead">
+    <div class="aa-pagehead-main">
+      <div class="aa-pagehead-ico">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      </div>
+      <div>
+        <h1>访问审计</h1>
+        <p>实时监控节点访问记录、规则命中及封禁状态，保障网络安全。</p>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px">
+      <span class="aa-pagehead-meta" id="headClock"></span>
+      <span class="aa-userbar">
+        <span class="aa-avatar" id="userAvatar"></span>
+        <span style="font-size:12px;color:var(--aa-text-2)" id="userLabel"></span>
+        <button class="aa-btn aa-btn--ghost aa-btn--sm" onclick="logout()">退出</button>
+      </span>
     </div>
   </div>
 
-  <div class="stats">
-    <div class="stat blue"><div class="num" id="sRules">-</div><div class="label">启用规则 / 总规则</div></div>
-    <div class="stat"><div class="num" id="sReports">-</div><div class="label">命中记录（总）</div></div>
-    <div class="stat"><div class="num" id="sReportsToday">-</div><div class="label">今日命中</div></div>
-    <div class="stat red"><div class="num" id="sBans">-</div><div class="label">封禁（总）</div></div>
-    <div class="stat red"><div class="num" id="sBansToday">-</div><div class="label">今日封禁</div></div>
+  <div class="aa-stats">
+    <div class="aa-stat">
+      <div class="aa-stat-top">
+        <span class="aa-stat-ico aa-stat-ico--blue">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-6M22 20H2"/></svg>
+        </span>
+        <span class="aa-stat-label">启用规则</span>
+      </div>
+      <div class="aa-stat-num" id="sRules">-</div>
+      <div class="aa-bar"><i id="sRulesBar" style="width:0%"></i></div>
+      <div class="aa-stat-foot"><span class="aa-mute" id="sRulesPct">—</span></div>
+    </div>
+
+    <div class="aa-stat">
+      <div class="aa-stat-top">
+        <span class="aa-stat-ico aa-stat-ico--blue">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 17l5-5 4 4 8-8"/><path d="M14 8h6v6"/></svg>
+        </span>
+        <span class="aa-stat-label">今日访问</span>
+      </div>
+      <div class="aa-stat-num" id="sLogsToday">-</div>
+      <svg class="aa-spark" id="sTrendSvg" preserveAspectRatio="none" viewBox="0 0 100 30"></svg>
+      <div class="aa-stat-foot" id="sLogsDelta"><span class="aa-mute">较昨日 —</span></div>
+    </div>
+
+    <div class="aa-stat">
+      <div class="aa-stat-top">
+        <span class="aa-stat-ico aa-stat-ico--amber">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        </span>
+        <span class="aa-stat-label">今日命中</span>
+      </div>
+      <div class="aa-stat-num" id="sReportsToday">-</div>
+      <div class="aa-stat-foot" id="sReportsDelta"><span class="aa-mute">较昨日 —</span></div>
+    </div>
+
+    <div class="aa-stat">
+      <div class="aa-stat-top">
+        <span class="aa-stat-ico aa-stat-ico--red">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg>
+        </span>
+        <span class="aa-stat-label">封禁用户</span>
+      </div>
+      <div class="aa-stat-num" id="sBans">-</div>
+      <div class="aa-stat-foot"><span class="aa-mute" id="sBansHint">—</span></div>
+    </div>
+
+    <div class="aa-stat">
+      <div class="aa-stat-top">
+        <span class="aa-stat-ico aa-stat-ico--purple">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+        </span>
+        <span class="aa-stat-label">在线节点</span>
+      </div>
+      <div class="aa-stat-num" id="sNodes">-</div>
+      <div class="aa-bar aa-bar--purple"><i id="sNodesBar" style="width:0%"></i></div>
+      <div class="aa-stat-foot"><span class="aa-mute" id="sNodesPct">—</span></div>
+    </div>
   </div>
 
-  <div class="tabs">
+  <div class="aa-tabs">
     <button class="active" data-tab="logs" onclick="switchTab('logs')">访问日志</button>
     <button data-tab="rules" onclick="switchTab('rules')">审计规则</button>
     <button data-tab="reports" onclick="switchTab('reports')">命中记录</button>
@@ -111,51 +454,93 @@
   </div>
 
   <!-- 访问日志（全量，report_all 节点上报） -->
-  <div class="pane active" id="pane-logs">
-    <div class="card">
-      <div class="row" style="margin-bottom:4px">
-        <select id="lNodeId" style="width:170px"><option value="">全部节点</option></select>
-        <input id="lUserId" type="number" placeholder="用户ID" style="width:110px" />
-        <input id="lKeyword" placeholder="目标关键字" style="width:160px" />
-        <select id="lMatched" style="width:110px">
-          <option value="">全部</option>
-          <option value="1">仅命中</option>
-          <option value="0">仅未命中</option>
-        </select>
-      </div>
-      <div class="row">
-        <input id="lFrom" type="datetime-local" style="width:200px" title="起始时间" />
-        <span style="color:#9ca3af">至</span>
-        <input id="lTo" type="datetime-local" style="width:200px" title="结束时间" />
-        <button class="secondary" onclick="loadLogs(1)">查询</button>
-        <button class="ghost" onclick="resetLogFilter()">重置</button>
-      </div>
-      <div class="hint">仅显示开启 <span class="mono">report_all</span> 的节点上报的全量日志；按插件配置保留天数自动清理（默认 3 天）。命中记录请见「命中记录」tab。</div>
-      <div class="row" style="margin-top:6px;justify-content:space-between">
-        <span id="logsTotal" class="hint"></span>
-        <span class="row">
-          <button class="ghost small" id="logsPrev" onclick="logsPage(-1)">上一页</button>
-          <span id="logsPageInfo" class="hint"></span>
-          <button class="ghost small" id="logsNext" onclick="logsPage(1)">下一页</button>
+  <div class="aa-pane active" id="pane-logs">
+    <div class="aa-card">
+      <div class="aa-card-head">
+        <span class="aa-card-title">
+          <span class="aa-ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>
+          访问日志
         </span>
+        <button class="aa-btn aa-btn--ghost aa-btn--sm" onclick="exportLogs()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12M7 11l5 5 5-5M4 21h16"/></svg>
+          导出 CSV
+        </button>
       </div>
-      <table>
-        <thead><tr><th>时间</th><th>节点</th><th>用户</th><th>目标</th><th>来源IP</th><th>命中</th></tr></thead>
-        <tbody id="logsBody"></tbody>
-      </table>
+
+      <div class="aa-filters">
+        <div class="aa-filter-row">
+          <div class="aa-field">
+            <label>节点</label>
+            <select id="lNodeId" style="width:150px"><option value="">全部节点</option></select>
+          </div>
+          <div class="aa-field">
+            <label>用户</label>
+            <input id="lUserId" type="number" placeholder="用户 ID" style="width:110px" />
+          </div>
+          <div class="aa-field">
+            <label>关键词</label>
+            <input id="lKeyword" placeholder="目标域名 / IP" style="width:170px" />
+          </div>
+          <div class="aa-field">
+            <label>状态</label>
+            <select id="lMatched" style="width:120px">
+              <option value="">全部</option>
+              <option value="1">仅命中</option>
+              <option value="0">仅未命中</option>
+            </select>
+          </div>
+        </div>
+        <div class="aa-filter-row">
+          <div class="aa-field">
+            <label>时间</label>
+            <input id="lFrom" type="datetime-local" style="width:190px" title="起始时间" />
+            <span class="aa-sep">→</span>
+            <input id="lTo" type="datetime-local" style="width:190px" title="结束时间" />
+          </div>
+          <span class="aa-spacer"></span>
+          <button class="aa-btn" onclick="loadLogs(1)">查询</button>
+          <button class="aa-btn aa-btn--ghost" onclick="resetLogFilter()">重置</button>
+        </div>
+      </div>
+
+      <div class="aa-hint">
+        仅显示开启 <code>report_all</code> 的节点上报的全量日志；按插件配置保留天数自动清理（默认 3 天，当前 <b id="logsRetentionHint">3</b> 天）。命中记录请见「命中记录」tab。
+      </div>
+
+      <div class="aa-tablebox">
+        <table>
+          <thead><tr>
+            <th>时间</th><th>节点</th><th>用户</th><th>目标</th><th>来源 IP</th><th>状态</th>
+          </tr></thead>
+          <tbody id="logsBody"></tbody>
+        </table>
+      </div>
+
+      <div class="aa-pager">
+        <span class="aa-pager-info" id="logsTotal"></span>
+        <span class="aa-pager-pages" id="logsPager"></span>
+      </div>
     </div>
   </div>
 
   <!-- 规则 -->
-  <div class="pane" id="pane-rules">
-    <div class="card">
-      <div class="hint" style="margin-bottom:12px">
-        匹配类型：<b>domain</b> 精确域名 · <b>domain_suffix</b> 域名后缀（含子域名，如规则 <span class="mono">example.com</span> 命中 <span class="mono">a.example.com</span>）·
-        <b>keyword</b> 目标包含关键字 · <b>ip_cidr</b> IP 段（<span class="mono">1.2.3.0/24</span>）。
+  <div class="aa-pane" id="pane-rules">
+    <div class="aa-card">
+      <div class="aa-card-head">
+        <span class="aa-card-title">
+          <span class="aa-ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2" fill="currentColor" stroke="none"/></svg></span>
+          <span id="ruleFormTitle">添加规则</span>
+        </span>
+      </div>
+
+      <div class="aa-hint">
+        匹配类型：<b>domain</b> 精确域名 · <b>domain_suffix</b> 域名后缀（含子域名，如 <code>example.com</code> 命中 <code>a.example.com</code>）·
+        <b>keyword</b> 目标包含关键字 · <b>ip_cidr</b> IP 段（<code>1.2.3.0/24</code>）。
         匹配值每行一个。阈值/窗口留空用全局默认（插件配置里改）。
       </div>
+
       <input type="hidden" id="rId" />
-      <div class="rule-form">
+      <div class="aa-formgrid">
         <input id="rName" placeholder="规则名称 *" />
         <select id="rType">
           <option value="domain_suffix">domain_suffix</option>
@@ -164,70 +549,147 @@
           <option value="ip_cidr">ip_cidr</option>
         </select>
         <input id="rThreshold" type="number" min="1" placeholder="阈值(默认)" />
-        <input id="rWindow" type="number" min="1" placeholder="窗口分钟(默认)" />
+        <input id="rWindow" type="number" min="1" placeholder="窗口分钟" />
         <input id="rRemark" placeholder="备注" />
-        <button id="rSubmit" onclick="saveRule()">添加规则</button>
-        <div class="full"><textarea id="rValue" placeholder="匹配值 *（每行一个）&#10;gambling-example.com&#10;porn-example.org"></textarea></div>
+        <button class="aa-btn" id="rSubmit" onclick="saveRule()">添加规则</button>
       </div>
-      <div class="row" id="rEditBar" style="display:none; margin-top:8px">
-        <span class="badge warn">正在编辑规则 #<span id="rEditId"></span></span>
-        <button class="ghost small" onclick="resetForm()">取消编辑</button>
+      <div style="margin-top:10px">
+        <textarea id="rValue" placeholder="匹配值 *（每行一个）&#10;gambling-example.com&#10;porn-example.org"></textarea>
       </div>
-      <div id="ruleMsg" class="msg"></div>
-      <table>
-        <thead><tr><th>ID</th><th>名称</th><th>类型</th><th>匹配值</th><th>阈值/窗口</th><th>状态</th><th>备注</th><th>操作</th></tr></thead>
-        <tbody id="rulesBody"></tbody>
-      </table>
+
+      <div class="aa-editbar" id="rEditBar" style="display:none">
+        <span class="aa-badge aa-badge--warn">正在编辑规则 #<span id="rEditId"></span></span>
+        <button class="aa-btn aa-btn--ghost aa-btn--sm" onclick="resetForm()">取消编辑</button>
+      </div>
+      <div id="ruleMsg" class="aa-msg"></div>
+
+      <div class="aa-tablebox" style="margin-top:14px">
+        <table>
+          <thead><tr>
+            <th>ID</th><th>名称</th><th>类型</th><th>匹配值</th><th>阈值 / 窗口</th><th>状态</th><th>备注</th><th>操作</th>
+          </tr></thead>
+          <tbody id="rulesBody"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
   <!-- 命中记录 -->
-  <div class="pane" id="pane-reports">
-    <div class="card">
-      <div class="row" style="margin-bottom:4px">
-        <input id="fUserId" type="number" placeholder="用户ID" style="width:110px" />
-        <select id="fNodeId" style="width:170px"><option value="">全部节点</option></select>
-        <input id="fKeyword" placeholder="目标关键字" style="width:160px" />
-        <button class="secondary" onclick="loadReports()">查询</button>
-        <button class="ghost" onclick="document.getElementById('fUserId').value='';document.getElementById('fNodeId').value='';document.getElementById('fKeyword').value='';loadReports()">重置</button>
+  <div class="aa-pane" id="pane-reports">
+    <div class="aa-card">
+      <div class="aa-card-head">
+        <span class="aa-card-title">
+          <span class="aa-ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg></span>
+          命中记录
+        </span>
       </div>
-      <div class="hint">最近 200 条；目标关键字为前端过滤。命中记录按插件配置的保留天数自动清理。</div>
-      <table>
-        <thead><tr><th>ID</th><th>用户</th><th>规则</th><th>目标</th><th>节点</th><th>来源IP</th><th>触发封禁</th><th>时间</th></tr></thead>
-        <tbody id="reportsBody"></tbody>
-      </table>
+
+      <div class="aa-filters">
+        <div class="aa-filter-row">
+          <div class="aa-field">
+            <label>用户</label>
+            <input id="fUserId" type="number" placeholder="用户 ID" style="width:110px" />
+          </div>
+          <div class="aa-field">
+            <label>节点</label>
+            <select id="fNodeId" style="width:150px"><option value="">全部节点</option></select>
+          </div>
+          <div class="aa-field">
+            <label>关键词</label>
+            <input id="fKeyword" placeholder="目标域名 / 规则名" style="width:180px" />
+          </div>
+          <span class="aa-spacer"></span>
+          <button class="aa-btn" onclick="loadReports()">查询</button>
+          <button class="aa-btn aa-btn--ghost" onclick="resetReportFilter()">重置</button>
+        </div>
+      </div>
+
+      <div class="aa-hint">
+        最近 200 条，目标关键词为前端过滤。命中记录按插件配置保留 <b id="reportsRetentionHint">30</b> 天自动清理。
+      </div>
+
+      <div class="aa-tablebox">
+        <table>
+          <thead><tr>
+            <th>ID</th><th>用户</th><th>规则</th><th>目标</th><th>节点</th><th>来源 IP</th><th>触发封禁</th><th>时间</th>
+          </tr></thead>
+          <tbody id="reportsBody"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
   <!-- 节点状态 -->
-  <div class="pane" id="pane-nodes">
-    <div class="card">
-      <div class="row" style="margin-bottom:8px">
-        <button class="ghost" onclick="loadNodes()">刷新</button>
+  <div class="aa-pane" id="pane-nodes">
+    <div class="aa-card">
+      <div class="aa-card-head">
+        <span class="aa-card-title">
+          <span class="aa-ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01"/></svg></span>
+          节点上报状态
+        </span>
+        <button class="aa-btn aa-btn--ghost aa-btn--sm" onclick="loadNodes()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 11-3-6.7M21 4v5h-5"/></svg>
+          刷新
+        </button>
       </div>
-      <div class="hint">节点健康状态来自审计上报通道（tx-node 内嵌 / audit-agent.py 旁路）。"静默时长"为距最后一次上报的时间；超过插件配置的中断阈值会触发 TG 告警。</div>
-      <table>
-        <thead><tr><th>节点</th><th>最后上报</th><th>静默时长</th><th>上报批次</th><th>上报事件</th><th>命中</th><th>触发封禁</th></tr></thead>
-        <tbody id="nodesBody"></tbody>
-      </table>
+
+      <div class="aa-hint">
+        节点健康状态来自审计上报通道（tx-node 内嵌 / audit-agent.py 旁路）。「静默时长」为距最后一次上报的时间；
+        超过插件配置的中断阈值（当前 <b id="nodesOfflineHint">10</b> 分钟）会触发 TG 告警。
+      </div>
+
+      <div class="aa-tablebox">
+        <table>
+          <thead><tr>
+            <th>节点</th><th>最后上报</th><th>状态</th><th>上报批次</th><th>上报事件</th><th>命中</th><th>触发封禁</th>
+          </tr></thead>
+          <tbody id="nodesBody"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
   <!-- 封禁管理 -->
-  <div class="pane" id="pane-bans">
-    <div class="card">
-      <div class="row" style="margin-bottom:8px">
-        <input id="opEmail" type="email" placeholder="用户邮箱" style="min-width:240px" />
-        <input id="opReason" placeholder="原因（可选）" style="min-width:200px" />
-        <button class="danger" onclick="opUser('ban')">封禁</button>
-        <button class="secondary" onclick="opUser('unban')">解封</button>
-        <button class="ghost" onclick="loadBanLogs()">刷新</button>
+  <div class="aa-pane" id="pane-bans">
+    <div class="aa-card">
+      <div class="aa-card-head">
+        <span class="aa-card-title">
+          <span class="aa-ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg></span>
+          手动封禁 / 解封
+        </span>
       </div>
-      <div id="opMsg" class="msg"></div>
-      <table>
-        <thead><tr><th>ID</th><th>用户</th><th>动作</th><th>规则</th><th>命中/阈值</th><th>操作人</th><th>原因</th><th>时间</th></tr></thead>
-        <tbody id="banLogsBody"></tbody>
-      </table>
+
+      <div class="aa-filter-row">
+        <div class="aa-field" style="flex:1 1 260px">
+          <input id="opEmail" type="email" placeholder="用户邮箱" style="width:100%" />
+        </div>
+        <div class="aa-field" style="flex:1 1 220px">
+          <input id="opReason" placeholder="原因（可选）" style="width:100%" />
+        </div>
+        <button class="aa-btn aa-btn--danger" onclick="opUser('ban')">封禁</button>
+        <button class="aa-btn aa-btn--secondary" onclick="opUser('unban')">解封</button>
+      </div>
+      <div id="opMsg" class="aa-msg"></div>
+
+      <div class="aa-card-head" style="margin-top:18px;margin-bottom:10px">
+        <span class="aa-card-title">
+          <span class="aa-ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></span>
+          封禁操作日志
+        </span>
+        <button class="aa-btn aa-btn--ghost aa-btn--sm" onclick="loadBanLogs()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 11-3-6.7M21 4v5h-5"/></svg>
+          刷新
+        </button>
+      </div>
+
+      <div class="aa-tablebox">
+        <table>
+          <thead><tr>
+            <th>ID</th><th>用户</th><th>动作</th><th>规则</th><th>命中 / 阈值</th><th>操作人</th><th>原因</th><th>时间</th>
+          </tr></thead>
+          <tbody id="banLogsBody"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 </div>
@@ -236,6 +698,7 @@
 let token = null;
 let rulesCache = [];
 let nodesCache = [];
+let statsCache = null;
 
 /* ── 会话持久化（localStorage）── */
 const LS_KEY = 'aa_session';
@@ -256,11 +719,23 @@ function clearSession() {
 /* ── 基础 ── */
 function ts(t) { return t ? new Date(t * 1000).toLocaleString('zh-CN', { hour12: false }) : '-'; }
 function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+function fmtNum(n) { return (n == null || isNaN(n)) ? '-' : Number(n).toLocaleString('zh-CN'); }
 function showMsg(id, text, ok) {
   const el = document.getElementById(id);
   el.textContent = text;
-  el.className = 'msg ' + (ok ? 'ok' : 'err');
-  setTimeout(() => { el.className = 'msg'; }, 4000);
+  el.className = 'aa-msg ' + (ok ? 'ok' : 'err');
+  setTimeout(() => { el.className = 'aa-msg'; }, 4000);
+}
+
+/* 节点色块：按 node_id 稳定取一个色，扫表时靠颜色区分节点 */
+const NODE_COLORS = ['#378ADD', '#1D9E75', '#EF9F27', '#D4537E', '#7F77DD', '#D85A30', '#639922', '#BA7517'];
+function nodeColor(id) {
+  const n = parseInt(id, 10);
+  return NODE_COLORS[(isNaN(n) ? 0 : n) % NODE_COLORS.length];
+}
+function nodeCell(id, name) {
+  return `<span class="aa-nodecell"><i class="aa-nodebar" style="background:${nodeColor(id)}"></i>`
+    + `<span>${esc(name)}</span><span class="aa-nodeid">#${esc(id)}</span></span>`;
 }
 
 async function api(url, payload) {
@@ -305,11 +780,24 @@ async function login() {
 }
 
 function enterWorkspace(email) {
-  document.getElementById('userLabel').textContent = email;
+  const label = email || 'admin';
+  document.getElementById('userLabel').textContent = label;
+  document.getElementById('userAvatar').textContent = (label[0] || 'A').toUpperCase();
+  renderClock();
   document.getElementById('loginWrap').style.display = 'none';
   document.getElementById('workspace').style.display = '';
   loadStats(); loadRules(); loadNodes().then(() => { loadLogs(1); loadReports(); }); loadBanLogs();
   startAutoRefresh();
+}
+
+/* 页头日期：与参考图一致，显示「年月日 星期 时分」 */
+function renderClock() {
+  const el = document.getElementById('headClock');
+  if (!el) return;
+  const d = new Date();
+  const wd = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][d.getDay()];
+  const p = n => String(n).padStart(2, '0');
+  el.textContent = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${wd} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 function logout() {
@@ -321,12 +809,87 @@ function logout() {
 }
 
 function switchTab(name) {
-  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
-  document.querySelectorAll('.pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + name));
-  if (name === 'logs') loadLogs();
+  document.querySelectorAll('.aa-tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.aa-pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + name));
+  if (name === 'logs') loadLogs(1);
   if (name === 'reports') loadReports();
   if (name === 'nodes') loadNodes();
   if (name === 'bans') loadBanLogs();
+}
+
+/* ── 统计卡 ── */
+async function loadStats() {
+  const r = await api('/plugin/access-audit/stats');
+  const d = r.data || {};
+  statsCache = d;
+
+  const rTotal = d.rules_total ?? 0, rEnabled = d.rules_enabled ?? 0;
+  document.getElementById('sRules').innerHTML = `${fmtNum(rEnabled)} <small>/ ${fmtNum(rTotal)}</small>`;
+  const rPct = rTotal > 0 ? Math.round(rEnabled / rTotal * 100) : 0;
+  document.getElementById('sRulesBar').style.width = rPct + '%';
+  document.getElementById('sRulesPct').textContent = rTotal > 0 ? rPct + '% 已启用' : '暂未配置规则';
+
+  // 今日访问：来自全量访问日志表（audit_access_logs），与「命中」不是同一张表
+  document.getElementById('sLogsToday').textContent = fmtNum(d.logs_today ?? 0);
+  renderDelta('sLogsDelta', d.logs_today, d.logs_yesterday, '较昨日');
+
+  document.getElementById('sReportsToday').textContent = fmtNum(d.reports_today ?? 0);
+  renderDelta('sReportsDelta', d.reports_today, d.reports_yesterday, '较昨日');
+
+  // 封禁：总数为主，今日新增放在脚注；今日>0 时用红字提示风险
+  const bansToday = d.bans_today ?? 0;
+  document.getElementById('sBans').textContent = fmtNum(d.bans_total ?? 0);
+  document.getElementById('sBansHint').innerHTML = bansToday > 0
+    ? `<span class="aa-up">今日 +${fmtNum(bansToday)}</span>`
+    : '今日无新增';
+
+  const nTotal = d.nodes_total ?? 0, nOnline = d.nodes_online ?? 0;
+  document.getElementById('sNodes').innerHTML = `${fmtNum(nOnline)} <small>/ ${fmtNum(nTotal)}</small>`;
+  const nPct = nTotal > 0 ? Math.round(nOnline / nTotal * 100) : 0;
+  document.getElementById('sNodesBar').style.width = nPct + '%';
+  document.getElementById('sNodesPct').textContent = nTotal > 0 ? nPct + '% 在线' : '暂无节点上报';
+
+  drawSpark(d.trend_24h || []);
+}
+
+/* 同比：升高用红（对审计场景＝风险上升），降低用绿。
+   prev 为空（后端未返回该字段）时显示占位，不假装有对比数据。 */
+function renderDelta(elId, cur, prev, suffix) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (prev == null) { el.innerHTML = `<span class="aa-mute">${suffix} —</span>`; return; }
+  const diff = (cur ?? 0) - prev;
+  const rate = prev > 0 ? Math.round(diff / prev * 100) : null;
+  if (diff === 0) {
+    el.innerHTML = `<span class="aa-mute">${suffix}持平</span>`;
+    return;
+  }
+  const cls = diff > 0 ? 'aa-up' : 'aa-down';
+  const arrow = diff > 0 ? '↑' : '↓';
+  const rateTxt = rate == null ? '新增' : Math.abs(rate) + '%';
+  el.innerHTML = `<span class="${cls}">${arrow} ${rateTxt}</span><span class="aa-mute">${suffix}</span>`;
+}
+
+/* 迷你折线：把 24 个点归一化到 100x30 的 viewBox 里。
+   宽高必须与 <svg viewBox> 和 .aa-spark 的 CSS 高度三者一致，
+   否则 preserveAspectRatio="none" 会把线拉变形。 */
+function drawSpark(series) {
+  const svg = document.getElementById('sTrendSvg');
+  if (!svg) return;
+  if (!series || series.length < 2) { svg.innerHTML = ''; return; }
+  const W = 100, H = 30, pad = 4;
+  const max = Math.max(...series, 1);
+  const stepX = W / (series.length - 1);
+  const y = v => H - pad - (v / max) * (H - pad * 2);
+  const pts = series.map((v, i) => [i * stepX, y(v)]);
+
+  const line = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(2) + ' ' + p[1].toFixed(2)).join(' ');
+  const area = line + ` L${W} ${H} L0 ${H} Z`;
+
+  svg.innerHTML = `
+    <path d="${area}" fill="#e6f1fb" stroke="none"/>
+    <path d="${line}" fill="none" stroke="#378ADD" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${pts[pts.length - 1][0].toFixed(2)}" cy="${pts[pts.length - 1][1].toFixed(2)}" r="2.2" fill="#185fa5"/>`;
 }
 
 /* ── 访问日志 ── */
@@ -342,8 +905,7 @@ function resetLogFilter() {
   loadLogs(1);
 }
 
-function logsPage(delta) {
-  const p = logsCurPage + delta;
+function logsPage(p) {
   if (p < 1 || p > logsTotalPages) return;
   loadLogs(p);
 }
@@ -364,21 +926,78 @@ async function loadLogs(page) {
   if (from) params.set('from', from);
   if (to) params.set('to', to);
   params.set('page', logsCurPage);
+
   const r = await api('/plugin/access-audit/logs?' + params.toString());
   const d = r.data || {};
   const rows = d.list || [];
   logsTotalPages = d.pages || 1;
-  document.getElementById('logsTotal').textContent = `共 ${d.total ?? 0} 条`;
-  document.getElementById('logsPageInfo').textContent = `${d.page ?? 1} / ${d.pages ?? 1}`;
+  lastLogsRows = rows;
+
+  document.getElementById('logsTotal').textContent = `共 ${fmtNum(d.total ?? 0)} 条记录`;
+  renderPager('logsPager', d.page ?? 1, logsTotalPages, 'logsPage');
+
   document.getElementById('logsBody').innerHTML = rows.map(x => `
     <tr>
-      <td style="white-space:nowrap">${ts(x.created_at)}</td>
-      <td title="#${x.node_id}">${esc(x.node_name)}</td>
-      <td>${esc(x.user_email)}</td>
-      <td class="mono">${esc(x.target)}</td>
-      <td class="mono">${esc(x.source_ip || '-')}</td>
-      <td>${x.matched ? '<span class="badge no">命中</span>' : '<span class="badge ok">-</span>'}</td>
-    </tr>`).join('') || '<tr><td colspan="6" class="hint">暂无记录（节点 config.yml 开启 audit.report_all 后才有全量数据）</td></tr>';
+      <td class="aa-nowrap aa-mono">${ts(x.created_at)}</td>
+      <td>${nodeCell(x.node_id, x.node_name)}</td>
+      <td class="aa-nowrap">${esc(x.user_email)}</td>
+      <td><span class="aa-target aa-mono" title="${esc(x.target)}">${esc(x.target)}</span></td>
+      <td class="aa-mono aa-nowrap">${esc(x.source_ip || '-')}</td>
+      <td>${x.matched
+        ? '<span class="aa-badge aa-badge--warn"><i class="aa-dot aa-dot--warn"></i>命中</span>'
+        : '<span class="aa-badge aa-badge--ok"><i class="aa-dot aa-dot--ok"></i>正常</span>'}</td>
+    </tr>`).join('')
+    || '<tr><td colspan="6" class="aa-empty">暂无记录 —— 节点 config.yml 开启 <code>audit.report_all</code> 后才有全量数据</td></tr>';
+}
+
+/* 分页器：页码带省略号。
+   生成规则：首末页始终显示，当前页前后各 1 页，其余折叠为 …。
+   注意不能简单「遍历 + 遇到不连续就补省略号」——当前页为 1 时，
+   首页与当前页是同一条，会重复推入导致出现「12…6」这种错乱。 */
+function renderPager(elId, cur, total, fn) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (total <= 1) { el.innerHTML = ''; return; }
+
+  // 先算出要显示哪些页码（去重 + 升序）
+  const set = new Set([1, total]);
+  for (let d = -1; d <= 1; d++) {
+    const p = cur + d;
+    if (p >= 1 && p <= total) set.add(p);
+  }
+  const pages = Array.from(set).sort((a, b) => a - b);
+
+  const html = [];
+  html.push(`<button class="aa-page" onclick="${fn}(${cur - 1})" ${cur <= 1 ? 'disabled' : ''} aria-label="上一页">‹</button>`);
+
+  let prev = 0;
+  for (const p of pages) {
+    if (prev && p - prev > 1) html.push('<span class="aa-page aa-page--dots">…</span>');
+    html.push(`<button class="aa-page${p === cur ? ' active' : ''}" onclick="${fn}(${p})">${p}</button>`);
+    prev = p;
+  }
+
+  html.push(`<button class="aa-page" onclick="${fn}(${cur + 1})" ${cur >= total ? 'disabled' : ''} aria-label="下一页">›</button>`);
+  el.innerHTML = html.join('');
+}
+
+/* 导出当前日志（前端 CSV，避免再加一个后端接口） */
+let lastLogsRows = [];
+function exportLogs() {
+  if (!lastLogsRows.length) { alert('当前页没有可导出的数据'); return; }
+  const head = ['时间', '节点', '节点ID', '用户', '目标', '来源IP', '是否命中'];
+  const lines = [head.join(',')];
+  for (const x of lastLogsRows) {
+    const cells = [ts(x.created_at), x.node_name, x.node_id, x.user_email, x.target, x.source_ip || '', x.matched ? '命中' : '正常'];
+    lines.push(cells.map(v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`).join(','));
+  }
+  // 加 BOM 让 Excel 正确识别 UTF-8
+  const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `access-audit-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
 }
 
 /* ── 节点状态 ── */
@@ -393,31 +1012,24 @@ async function loadNodes() {
       `<option value="${n.node_id}">${esc(n.node_name)}</option>`).join('');
     sel.value = cur;
   });
+
   document.getElementById('nodesBody').innerHTML = nodesCache.map(n => {
     const silent = n.silent_minutes;
-    const badge = silent === null ? '<span class="badge">未上报</span>'
-      : (silent >= 10 ? `<span class="badge no">静默 ${silent} 分钟</span>` : '<span class="badge ok">正常</span>');
+    const badge = silent === null
+      ? '<span class="aa-badge aa-badge--mute">未上报</span>'
+      : (silent >= 10
+        ? `<span class="aa-badge aa-badge--no"><i class="aa-dot aa-dot--no"></i>静默 ${silent} 分钟</span>`
+        : '<span class="aa-badge aa-badge--ok"><i class="aa-dot aa-dot--ok"></i>正常</span>');
     return `<tr>
-      <td>${esc(n.node_name)} <span class="mono" style="color:#9ca3af">#${n.node_id}</span></td>
-      <td style="white-space:nowrap">${n.last_report_at ? ts(n.last_report_at) : '-'}</td>
+      <td>${nodeCell(n.node_id, n.node_name)}</td>
+      <td class="aa-nowrap">${n.last_report_at ? ts(n.last_report_at) : '-'}</td>
       <td>${badge}</td>
-      <td>${n.total_reports}</td>
-      <td>${n.total_events}</td>
-      <td>${n.total_matched}</td>
-      <td>${n.total_banned}</td>
+      <td>${fmtNum(n.total_reports)}</td>
+      <td>${fmtNum(n.total_events)}</td>
+      <td>${fmtNum(n.total_matched)}</td>
+      <td>${fmtNum(n.total_banned)}</td>
     </tr>`;
-  }).join('') || '<tr><td colspan="7" class="hint">暂无节点上报数据（配置 tx-node 或 audit-agent 后自动出现）</td></tr>';
-}
-
-/* ── 统计 ── */
-async function loadStats() {
-  const r = await api('/plugin/access-audit/stats');
-  const d = r.data || {};
-  document.getElementById('sRules').textContent = (d.rules_enabled ?? 0) + ' / ' + (d.rules_total ?? 0);
-  document.getElementById('sReports').textContent = d.reports_total ?? 0;
-  document.getElementById('sReportsToday').textContent = d.reports_today ?? 0;
-  document.getElementById('sBans').textContent = d.bans_total ?? 0;
-  document.getElementById('sBansToday').textContent = d.bans_today ?? 0;
+  }).join('') || '<tr><td colspan="7" class="aa-empty">暂无节点上报数据（配置 tx-node 或 audit-agent 后自动出现）</td></tr>';
 }
 
 /* ── 规则 ── */
@@ -428,20 +1040,24 @@ async function loadRules() {
     const vals = (x.match_value || '').split('\n').filter(Boolean);
     const shown = vals.slice(0, 2).join(', ');
     return `<tr id="rule-row-${x.id}">
-      <td>${x.id}</td>
+      <td class="aa-mono">${x.id}</td>
       <td>${esc(x.name)}</td>
-      <td class="mono">${esc(x.match_type)}</td>
-      <td class="mono" title="${esc(vals.join('\n'))}">${esc(shown)}${vals.length > 2 ? ` …共${vals.length}条` : ''}</td>
-      <td>${x.threshold || '默认'} / ${x.window_minutes ? x.window_minutes + '分' : '默认'}</td>
-      <td>${x.enabled ? '<span class="badge ok">启用</span>' : '<span class="badge no">停用</span>'}</td>
-      <td>${esc(x.remark || '')}</td>
-      <td style="white-space:nowrap">
-        <button class="small ghost" onclick="editRule(${x.id})">编辑</button>
-        <button class="small secondary" onclick="toggleRule(${x.id})">${x.enabled ? '停用' : '启用'}</button>
-        <button class="small danger" onclick="delRule(${x.id})">删除</button>
+      <td class="aa-mono">${esc(x.match_type)}</td>
+      <td class="aa-mono" title="${esc(vals.join('\n'))}">${esc(shown)}${vals.length > 2 ? ` <span class="aa-muted">…共 ${vals.length} 条</span>` : ''}</td>
+      <td class="aa-nowrap">${x.threshold || '<span class="aa-muted">默认</span>'} / ${x.window_minutes ? x.window_minutes + ' 分' : '<span class="aa-muted">默认</span>'}</td>
+      <td>${x.enabled
+        ? '<span class="aa-badge aa-badge--ok"><i class="aa-dot aa-dot--ok"></i>启用</span>'
+        : '<span class="aa-badge aa-badge--mute"><i class="aa-dot"></i>停用</span>'}</td>
+      <td class="aa-muted">${esc(x.remark || '')}</td>
+      <td>
+        <span class="aa-actions">
+          <button class="aa-btn aa-btn--ghost aa-btn--sm" onclick="editRule(${x.id})">编辑</button>
+          <button class="aa-btn aa-btn--ghost aa-btn--sm" onclick="toggleRule(${x.id})">${x.enabled ? '停用' : '启用'}</button>
+          <button class="aa-btn aa-btn--ghost aa-btn--sm" style="color:var(--aa-danger);border-color:var(--aa-danger-soft)" onclick="delRule(${x.id})">删除</button>
+        </span>
       </td>
     </tr>`;
-  }).join('') || '<tr><td colspan="8" class="hint">暂无规则</td></tr>';
+  }).join('') || '<tr><td colspan="8" class="aa-empty">暂无规则 —— 在上方表单添加第一条审计规则</td></tr>';
   loadStats();
 }
 
@@ -456,6 +1072,7 @@ function editRule(id) {
   document.getElementById('rWindow').value = x.window_minutes || '';
   document.getElementById('rRemark').value = x.remark || '';
   document.getElementById('rSubmit').textContent = '保存修改';
+  document.getElementById('ruleFormTitle').textContent = '编辑规则';
   document.getElementById('rEditId').textContent = x.id;
   document.getElementById('rEditBar').style.display = '';
   document.querySelectorAll('#rulesBody tr').forEach(tr => tr.classList.remove('editing'));
@@ -468,6 +1085,7 @@ function resetForm() {
   document.getElementById('rId').value = '';
   ['rName', 'rValue', 'rThreshold', 'rWindow', 'rRemark'].forEach(i => document.getElementById(i).value = '');
   document.getElementById('rSubmit').textContent = '添加规则';
+  document.getElementById('ruleFormTitle').textContent = '添加规则';
   document.getElementById('rEditBar').style.display = 'none';
   document.querySelectorAll('#rulesBody tr').forEach(tr => tr.classList.remove('editing'));
 }
@@ -515,6 +1133,13 @@ async function delRule(id) {
 }
 
 /* ── 命中记录 ── */
+function resetReportFilter() {
+  document.getElementById('fUserId').value = '';
+  document.getElementById('fNodeId').value = '';
+  document.getElementById('fKeyword').value = '';
+  loadReports();
+}
+
 async function loadReports() {
   const uid = document.getElementById('fUserId').value;
   const nid = document.getElementById('fNodeId').value;
@@ -526,18 +1151,20 @@ async function loadReports() {
   const r = await api(url);
   let rows = r.data || [];
   if (kw) rows = rows.filter(x => (x.target || '').toLowerCase().includes(kw) || (x.rule_name || '').toLowerCase().includes(kw));
-  const nodeName = id => { const n = nodesCache.find(v => v.node_id === id); return n ? n.node_name : '#' + id; };
+  const nodeName = id => { const n = nodesCache.find(v => v.node_id === id); return n ? n.node_name : '节点'; };
   document.getElementById('reportsBody').innerHTML = rows.map(x => `
     <tr>
-      <td>${x.id}</td>
-      <td>${esc(x.user_email)}</td>
+      <td class="aa-mono">${x.id}</td>
+      <td class="aa-nowrap">${esc(x.user_email)}</td>
       <td>${esc(x.rule_name)}</td>
-      <td class="mono">${esc(x.target)}</td>
-      <td title="#${x.node_id}">${esc(nodeName(x.node_id))}</td>
-      <td class="mono">${esc(x.source_ip || '-')}</td>
-      <td>${x.banned ? '<span class="badge no">是</span>' : '<span class="badge ok">否</span>'}</td>
-      <td style="white-space:nowrap">${ts(x.created_at)}</td>
-    </tr>`).join('') || '<tr><td colspan="8" class="hint">暂无记录</td></tr>';
+      <td><span class="aa-target aa-mono" title="${esc(x.target)}">${esc(x.target)}</span></td>
+      <td>${nodeCell(x.node_id, nodeName(x.node_id))}</td>
+      <td class="aa-mono aa-nowrap">${esc(x.source_ip || '-')}</td>
+      <td>${x.banned
+        ? '<span class="aa-badge aa-badge--no"><i class="aa-dot aa-dot--no"></i>已封禁</span>'
+        : '<span class="aa-badge aa-badge--mute">否</span>'}</td>
+      <td class="aa-nowrap aa-mono">${ts(x.created_at)}</td>
+    </tr>`).join('') || '<tr><td colspan="8" class="aa-empty">暂无记录</td></tr>';
 }
 
 /* ── 封禁管理 ── */
@@ -545,20 +1172,22 @@ async function loadBanLogs() {
   const r = await api('/plugin/access-audit/ban-logs');
   document.getElementById('banLogsBody').innerHTML = (r.data || []).map(x => `
     <tr>
-      <td>${x.id}</td>
-      <td>${esc(x.user_email)}</td>
-      <td>${x.action === 'ban' ? '<span class="badge no">封禁</span>' : '<span class="badge ok">解封</span>'}</td>
+      <td class="aa-mono">${x.id}</td>
+      <td class="aa-nowrap">${esc(x.user_email)}</td>
+      <td>${x.action === 'ban'
+        ? '<span class="aa-badge aa-badge--no"><i class="aa-dot aa-dot--no"></i>封禁</span>'
+        : '<span class="aa-badge aa-badge--ok"><i class="aa-dot aa-dot--ok"></i>解封</span>'}</td>
       <td>${esc(x.rule_name || '-')}</td>
-      <td>${x.hit_count}/${x.threshold || '-'}</td>
-      <td>${x.operator_id ? '#' + x.operator_id : '自动'}</td>
-      <td>${esc(x.reason || '')}</td>
-      <td style="white-space:nowrap">${ts(x.created_at)}</td>
-    </tr>`).join('') || '<tr><td colspan="8" class="hint">暂无日志</td></tr>';
+      <td class="aa-mono">${x.hit_count} / ${x.threshold || '-'}</td>
+      <td>${x.operator_id ? '#' + x.operator_id : '<span class="aa-muted">自动</span>'}</td>
+      <td class="aa-muted">${esc(x.reason || '')}</td>
+      <td class="aa-nowrap aa-mono">${ts(x.created_at)}</td>
+    </tr>`).join('') || '<tr><td colspan="8" class="aa-empty">暂无日志</td></tr>';
 }
 
 async function opUser(action) {
   const email = document.getElementById('opEmail').value.trim();
-  if (!email) return;
+  if (!email) { showMsg('opMsg', '请输入用户邮箱', false); return; }
   const verb = action === 'ban' ? '封禁' : '解封';
   if (!confirm(`确认${verb} ${email}？`)) return;
   const r = await api('/plugin/access-audit/' + action, {
@@ -578,7 +1207,7 @@ function startAutoRefresh() {
   stopAutoRefresh();
   autoTimer = setInterval(() => {
     if (document.hidden) return; // 后台标签页不刷新，省请求
-    const active = document.querySelector('.tabs button.active');
+    const active = document.querySelector('.aa-tabs button.active');
     if (!active) return;
     const name = active.dataset.tab;
     if (name === 'logs') loadLogs(logsCurPage);
@@ -586,6 +1215,7 @@ function startAutoRefresh() {
     else if (name === 'nodes') loadNodes();
     else if (name === 'bans') loadBanLogs();
     loadStats();
+    renderClock();
   }, 30000);
 }
 function stopAutoRefresh() {

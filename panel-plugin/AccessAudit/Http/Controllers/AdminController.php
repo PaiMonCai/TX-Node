@@ -29,7 +29,10 @@ class AdminController extends Controller
             return response()->json(['data' => self::$statsCache]);
         }
 
+        $now = time();
         $todayStart = strtotime('today');
+        $yesterdayStart = $todayStart - 86400;
+
         $data = [
             'rules_total' => AuditRule::query()->count(),
             'rules_enabled' => AuditRule::query()->where('enabled', 1)->count(),
@@ -38,11 +41,107 @@ class AdminController extends Controller
             'reports_today' => AuditReport::query()->where('created_at', '>=', $todayStart)->count(),
             'bans_total' => AuditBanLog::query()->where('action', 'ban')->count(),
             'bans_today' => AuditBanLog::query()->where('action', 'ban')->where('created_at', '>=', $todayStart)->count(),
+            // 访问量取自全量访问日志表（节点开启 report_all 才有数据），
+            // 与 reports_*（命中记录）是两张不同的表，卡片上不能混用。
+            'logs_total' => self::approxRowCount('audit_access_logs'),
+            'logs_today' => AuditAccessLog::query()->where('created_at', '>=', $todayStart)->count(),
         ];
 
+        // ── 仪表盘趋势数据（卡片上的“较昨日”与迷你折线）──
+        // 全部走 created_at 上的现有索引做范围扫描，且每个指标只发一条 SQL，
+        // 禁止按小时循环查询（24 次 COUNT 会把连接占满）。
+        $data += self::trendData($now, $todayStart, $yesterdayStart);
+
         self::$statsCache = $data;
-        self::$statsCachedAt = time();
+        self::$statsCachedAt = $now;
         return response()->json(['data' => $data]);
+    }
+
+    /**
+     * 仪表盘趋势指标。
+     *
+     * 返回：
+     *   logs_yesterday —— 昨日访问量，用于“较昨日 ±N%”
+     *   reports_yesterday / bans_yesterday —— 命中 / 封禁的同比基数
+     *   trend_24h  —— 最近 24 个整点小时的访问量，供前端画迷你折线
+     *   nodes_total / nodes_online —— 在线节点 x/y
+     *
+     * 折线取访问量（audit_access_logs）而非命中量：命中是稀疏事件，
+     * 小时分桶后大量为 0，画出来是一条几乎贴底的直线没有信息量。
+     * 全部为范围查询 + GROUP BY，命中 created_at 上的现有索引。
+     */
+    private static function trendData(int $now, int $todayStart, int $yesterdayStart): array
+    {
+        $out = [
+            'logs_yesterday' => 0,
+            'reports_yesterday' => 0,
+            'bans_yesterday' => 0,
+            'trend_24h' => [],
+            'nodes_total' => 0,
+            'nodes_online' => 0,
+        ];
+
+        try {
+            $out['logs_yesterday'] = (int) AuditAccessLog::query()
+                ->where('created_at', '>=', $yesterdayStart)
+                ->where('created_at', '<', $todayStart)
+                ->count();
+
+            $out['reports_yesterday'] = (int) AuditReport::query()
+                ->where('created_at', '>=', $yesterdayStart)
+                ->where('created_at', '<', $todayStart)
+                ->count();
+
+            $out['bans_yesterday'] = (int) AuditBanLog::query()
+                ->where('action', 'ban')
+                ->where('created_at', '>=', $yesterdayStart)
+                ->where('created_at', '<', $todayStart)
+                ->count();
+
+            // 最近 24 整点：以「小时起点」为桶，一条 GROUP BY 取回全部非零小时，
+            // 再在 PHP 侧补零成 24 个点（保证前端拿到等长数组，画图不用判断空洞）。
+            $since = $now - 86399;
+            $rows = AuditAccessLog::query()
+                ->selectRaw('FLOOR(created_at / 3600) AS bucket, COUNT(*) AS n')
+                ->where('created_at', '>=', $since)
+                ->groupBy('bucket')
+                ->pluck('n', 'bucket');
+
+            $curHour = (int) floor($now / 3600);
+            $series = [];
+            for ($i = 23; $i >= 0; $i--) {
+                $series[] = (int) ($rows[$curHour - $i] ?? 0);
+            }
+            $out['trend_24h'] = $series;
+        } catch (\Throwable $e) {
+            // 趋势数据失败不应让整个仪表盘 500，保留零值继续
+            \Illuminate\Support\Facades\Log::warning('[AccessAudit] stats 趋势查询失败: ' . $e->getMessage());
+        }
+
+        try {
+            // 在线判定沿用 NodeHealthMonitor 的口径：曾经上报过且静默时长未超阈值。
+            $offlineMinutes = 10;
+            try {
+                $config = \Plugin\AccessAudit\Services\ConfigCache::get();
+                $offlineMinutes = max(1, (int) ($config['node_offline_minutes']['value'] ?? 10));
+            } catch (\Throwable $e) {
+                // 配置不可读时用默认阈值
+            }
+
+            // total 只数“曾经上报过”的节点：从未上报的节点（没开审计）不该拉低在线率，
+            // 分母与离线判定口径保持一致，否则在线率永远是个假数字。
+            $out['nodes_total'] = (int) AuditNodeStatus::query()
+                ->where('last_report_at', '>', 0)
+                ->count();
+            $out['nodes_online'] = (int) AuditNodeStatus::query()
+                ->where('last_report_at', '>', 0)
+                ->where('last_report_at', '>=', $now - $offlineMinutes * 60)
+                ->count();
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('[AccessAudit] stats 节点统计失败: ' . $e->getMessage());
+        }
+
+        return $out;
     }
 
     /**

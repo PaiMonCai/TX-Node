@@ -143,6 +143,11 @@ type Reporter struct {
 	failed   atomic.Uint64
 	// lastDropWarn throttles the "queue full" warning to one log per minute.
 	lastDropWarn atomic.Int64
+	// lastNoRulesWarn throttles the "no rules, nothing will be reported"
+	// warning. refreshRules runs every RulesRefresh minutes (default 5); an
+	// unthrottled warning would spam the log forever on a node that simply
+	// chooses not to use rules.
+	lastNoRulesWarn atomic.Int64
 }
 
 // resolveSizes applies defaults for batch/queue sizes.
@@ -201,6 +206,17 @@ func New(cfg Config, auth PanelAuth) *Reporter {
 		"report_all", cfg.ReportAll, "batch_max", cfg.BatchMax, "queue_cap", cfg.QueueCap,
 		"flush_interval", cfg.FlushInterval, "max_send_rate",
 		fmt.Sprintf("%d events/%ds", cfg.BatchMax*maxBatchesPerFlush, cfg.FlushInterval))
+	// Make the empty-rules trap loud. With report_all=false the ONLY way an
+	// event reaches the panel is a rule hit, so a node with no enabled rules
+	// reports nothing at all while still looking "enabled" in the config and
+	// in the startup log above. Operators hit this constantly; warn up front
+	// rather than leaving them to discover it from an empty dashboard
+	// (refreshRules only logs at Debug, which production never shows).
+	if !cfg.ReportAll {
+		nlog.Core().Warn("audit: report_all=false — only rule-matched targets are " +
+			"reported; with no enabled rules NOTHING will be sent. Set report_all: " +
+			"true for a full access log, or add enable rules on the panel")
+	}
 	return r
 }
 
@@ -327,6 +343,7 @@ func (r *Reporter) refreshRules() {
 		Data []rule `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		nlog.Core().Warn("audit: refresh rules decode failed", "error", err)
 		return
 	}
 	for i := range body.Data {
@@ -344,6 +361,29 @@ func (r *Reporter) refreshRules() {
 	snapshot := body.Data
 	r.rules.Store(&snapshot)
 	nlog.Core().Debug("audit: rules refreshed", "count", len(body.Data))
+
+	// Rules loaded but empty while report_all=false: every connection will be
+	// dropped by Observe(). Surface it instead of failing silently — this is
+	// exactly the state a freshly-enabled node lands in, and it is
+	// indistinguishable from "working fine" on the panel (no rows appear).
+	if len(body.Data) == 0 && !r.cfg.ReportAll {
+		r.warnNoRules()
+	}
+}
+
+// warnNoRules emits the "no enabled rules" warning at most once per minute.
+// A node that legitimately runs without rules would otherwise log this on
+// every rules_refresh tick (default: every 5 minutes, forever).
+func (r *Reporter) warnNoRules() {
+	now := time.Now().Unix()
+	last := r.lastNoRulesWarn.Load()
+	if now-last < 60 || !r.lastNoRulesWarn.CompareAndSwap(last, now) {
+		return
+	}
+	nlog.Core().Warn("audit: panel returned 0 enabled rules and report_all=false — " +
+		"all connections are being dropped locally, nothing is reported. " +
+		"Enable rules on the panel or set report_all: true",
+		"node_id", r.auth.NodeID)
 }
 
 // match checks target against cached rules. Semantics mirror the panel's

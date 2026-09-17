@@ -29,6 +29,12 @@
 # 需要面板安装 AccessAudit 插件（v2.1+）。上报复用上面的 panel.url/token/node_id
 # 认证（与原版节点上报同一套 ServerV2 中间件），无需额外密钥。
 # 不加这段 = 与原版 xboard-node 行为完全一致。
+#
+# ⚠️ 容易踩的坑：report_all=false 时只上报「命中规则」的连接，
+#    面板上一条启用规则都没有 = 一个连接都不会上报（配置看着却是正常的）。
+#    → 只要命中记录：report_all: false + 面板至少配一条启用规则
+#    → 要全量访问日志：report_all: true
+#    处于无规则状态时节点启动会打 WARN，规则拉取到空集也会再告警一次。
 # audit:
 #   enabled: true
 #   report_all: false     # true = 全量访问日志上报（面板可查看所有连接，量级大）

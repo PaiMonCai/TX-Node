@@ -244,6 +244,119 @@ func TestReporterObserveAndFlush(t *testing.T) {
 	}
 }
 
+// TestNoRulesDropsEverything 锁定「规则为空 + report_all=false」这一组合的
+// 真实行为：Observe 必须静默丢弃每一个连接。
+//
+// 这不是期望行为，而是需要被记录在案的既成事实 —— 生产上最常见的踩坑就是
+// 用户开了 enabled 却没配任何规则，界面看起来"已启用"但一条数据都不上报。
+// 一旦有人改动 Observe 的过滤逻辑（例如让空规则表放行），这里会立刻告警。
+func TestNoRulesDropsEverything(t *testing.T) {
+	r := &Reporter{cfg: Config{Enabled: true, ReportAll: false, QueueCap: 10}}
+	r.http = &http.Client{} // 仅用于 Enabled() 判定，不发请求
+
+	// 规则表从未被填充：match() 走 p == nil 分支恒返回 false
+	r.Observe(7, "example.com", "1.1.1.1")
+	r.Observe(7, "1.2.3.4", "1.1.1.1")
+
+	if n := len(r.queue); n != 0 {
+		t.Fatalf("expected 0 queued (no rules, report_all=false), got %d", n)
+	}
+	if st := r.Stats(); st.Reported != 0 || st.Dropped != 0 {
+		t.Errorf("expected no reported/dropped counters to move, got %+v", st)
+	}
+
+	// 反面：同为空规则表，report_all=true 必须全部放行
+	r2 := &Reporter{cfg: Config{Enabled: true, ReportAll: true, QueueCap: 10}}
+	r2.http = &http.Client{}
+	r2.Observe(7, "example.com", "1.1.1.1")
+	if n := len(r2.queue); n != 1 {
+		t.Fatalf("expected 1 queued (report_all=true), got %d", n)
+	}
+	if r2.queue[0].Matched {
+		t.Error("expected Matched=false with an empty rule set")
+	}
+}
+
+// TestWarnNoRulesIsThrottled 验证空规则告警的节流。
+//
+// refreshRules 默认每 5 分钟跑一次；若不做节流，一台"就是不用规则"的节点会
+// 永久地每 5 分钟刷一条 Warn。
+//
+// 注意断言必须避开秒级精度陷阱：warnNoRules 写入的是 time.Now().Unix()，
+// 两次调用落在同一秒内会得到相同的时间戳，因此"刷新"无法通过值是否变化来判定。
+// 这里改为验证节流本身的语义 —— 回拨后再次调用应当把时间戳推回到"当前"。
+func TestWarnNoRulesIsThrottled(t *testing.T) {
+	r := &Reporter{cfg: Config{Enabled: true, ReportAll: false}}
+	r.http = &http.Client{}
+
+	r.warnNoRules()
+	now := r.lastNoRulesWarn.Load()
+	if now == 0 {
+		t.Fatal("expected lastNoRulesWarn to be set on first call")
+	}
+
+	// 场景 1：立即再调一次 —— 落在节流窗口内，不得改写时间戳
+	r.lastNoRulesWarn.Store(now - 30) // 30s 前，仍在 60s 窗口内
+	r.warnNoRules()
+	if got := r.lastNoRulesWarn.Load(); got != now-30 {
+		t.Error("expected the call inside the throttle window to leave the timestamp untouched")
+	}
+
+	// 场景 2：时间戳早于节流窗口 —— 必须被刷新为当前时间
+	r.lastNoRulesWarn.Store(now - 61)
+	r.warnNoRules()
+	if got := r.lastNoRulesWarn.Load(); got <= now-61 {
+		t.Errorf("expected the timestamp to advance after the window elapsed, got %d", got)
+	}
+}
+
+// TestRefreshRulesWarnsOnEmptySet 端到端验证：面板返回空规则列表且
+// report_all=false 时，refreshRules 必须设置 lastNoRulesWarn（即真的告警），
+// 而不是像以前那样只在 Debug 级别留一行看不见的日志。
+func TestRefreshRulesWarnsOnEmptySet(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != rulesPath {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[]}`) // 面板上一条启用规则都没有
+	}))
+	defer srv.Close()
+
+	r := &Reporter{
+		cfg:  Config{Enabled: true, ReportAll: false},
+		auth: PanelAuth{BaseURL: srv.URL, Token: "t", NodeID: 3},
+		http: &http.Client{Timeout: 5 * time.Second},
+	}
+	r.refreshRules()
+
+	if r.lastNoRulesWarn.Load() == 0 {
+		t.Fatal("expected refreshRules to emit the no-rules warning on an empty rule set")
+	}
+
+	// 规则非空时不得告警
+	r2 := &Reporter{
+		cfg:  Config{Enabled: true, ReportAll: false},
+		auth: PanelAuth{BaseURL: srv.URL, Token: "t", NodeID: 3},
+		http: &http.Client{Timeout: 5 * time.Second},
+	}
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[{"id":1,"name":"r","match_type":"keyword","match_value":"x"}]}`)
+	}))
+	defer srv2.Close()
+	r2.auth.BaseURL = srv2.URL
+	r2.refreshRules()
+	if r2.lastNoRulesWarn.Load() != 0 {
+		t.Error("did not expect the no-rules warning when rules are present")
+	}
+	if p := r2.rules.Load(); p == nil || len(*p) != 1 {
+		t.Errorf("expected 1 rule cached, got %v", p)
+	}
+}
+
+
 func TestReporterRequeueOnFailure(t *testing.T) {
 	var mu sync.Mutex
 	fail := true

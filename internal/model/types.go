@@ -1,6 +1,10 @@
 package model
 
-import "github.com/PaiMonCai/TX-Node/internal/config"
+import (
+	"strings"
+
+	"github.com/PaiMonCai/TX-Node/internal/config"
+)
 
 type NodeSpec struct {
 	Protocol        string
@@ -99,6 +103,61 @@ func (n *NodeSpec) GetProxyProtocol() bool {
 		}
 	}
 	return false
+}
+
+func (n *NodeSpec) GetProxyProtocolTrustedCIDRs() []string {
+	if n == nil || n.NetworkSettings == nil {
+		return nil
+	}
+	for _, key := range []string{"proxyProtocolTrustedCIDRs", "trustedProxyCIDRs", "proxy_protocol_trusted_cidrs"} {
+		if values := stringListSetting(n.NetworkSettings[key]); len(values) > 0 {
+			return values
+		}
+	}
+	return nil
+}
+
+func (n *NodeSpec) GetProxyProtocolAcceptNoHeader() bool {
+	if n == nil || n.NetworkSettings == nil {
+		return false
+	}
+	for _, key := range []string{"proxyProtocolAcceptNoHeader", "proxy_protocol_accept_no_header"} {
+		if value, ok := n.NetworkSettings[key].(bool); ok {
+			return value
+		}
+	}
+	return false
+}
+
+func stringListSetting(value any) []string {
+	appendValue := func(out []string, value string) []string {
+		for _, item := range strings.FieldsFunc(value, func(r rune) bool {
+			return r == ',' || r == ';' || r == '\n' || r == '\r'
+		}) {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	}
+
+	var out []string
+	switch values := value.(type) {
+	case string:
+		out = appendValue(out, values)
+	case []string:
+		for _, item := range values {
+			out = appendValue(out, item)
+		}
+	case []any:
+		for _, item := range values {
+			if text, ok := item.(string); ok {
+				out = appendValue(out, text)
+			}
+		}
+	}
+	return out
 }
 
 func cloneAnyMap(src map[string]any) map[string]any {

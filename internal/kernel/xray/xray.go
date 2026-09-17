@@ -29,11 +29,11 @@ import (
 
 	_ "github.com/xtls/xray-core/main/distro/all"
 
-	"github.com/cedar2025/xboard-node/internal/config"
-	"github.com/cedar2025/xboard-node/internal/kernel"
-	"github.com/cedar2025/xboard-node/internal/kernel/geodata"
-	"github.com/cedar2025/xboard-node/internal/nlog"
-	"github.com/cedar2025/xboard-node/internal/model"
+	"github.com/PaiMonCai/TX-Node/internal/config"
+	"github.com/PaiMonCai/TX-Node/internal/kernel"
+	"github.com/PaiMonCai/TX-Node/internal/kernel/geodata"
+	"github.com/PaiMonCai/TX-Node/internal/nlog"
+	"github.com/PaiMonCai/TX-Node/internal/model"
 )
 
 const (

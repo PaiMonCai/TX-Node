@@ -3,7 +3,7 @@ package controlplane
 import (
 	"context"
 
-	"github.com/cedar2025/xboard-node/internal/model"
+	"github.com/PaiMonCai/TX-Node/internal/model"
 )
 
 type EventType string

@@ -167,6 +167,38 @@ container_state() { # 输出 running | exited | created | absent
   echo "${st:-absent}"
 }
 
+# 清掉占用 $APP_NAME 这个名字的容器，让 compose 能干净地重建。
+#
+# 为什么需要它：`docker compose up -d` 靠 com.docker.compose.project/service
+# 标签识别「自己的旧容器」。若同名容器是**手工 docker run 创建**的，或来自
+# 别的 project 路径（换了 INSTALL_DIR），compose 认不出来 → 直接报
+#   Conflict. The container name "/tx-node" is already in use
+# 于是升级失败。这里先按名字兜底清理，再交给 compose。
+#
+# 返回 0 = 目标名已可用（或本来就没占用）；非 0 = 清理失败
+reset_container() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  # 该名字下不存在的容器 → 无事可做
+  if ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$APP_NAME"; then
+    return 0
+  fi
+
+  # 先让 compose 自己收（正常路径：它认得这个容器），失败再按名字强删
+  if dc down --remove-orphans >/dev/null 2>&1; then
+    if ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$APP_NAME"; then
+      return 0
+    fi
+  fi
+
+  warn "容器 $APP_NAME 已存在但不属于当前 compose 项目（可能是手工 docker run 或换过安装目录），强制移除"
+  docker rm -f "$APP_NAME" >/dev/null 2>&1 || {
+    warn "移除容器 $APP_NAME 失败，请手动执行: docker rm -f $APP_NAME"
+    return 1
+  }
+  ok "已移除旧容器 $APP_NAME"
+  return 0
+}
+
 # ════════════════════════════════════════════════════════════════════
 #  install.sh（legacy systemd）侧封装
 #  仅用于查看来源部署的状态 / 停止它，txnode 不写这里的任何文件。
@@ -843,7 +875,16 @@ EOF
   fi
 
   info "启动 txnode..."
-  if ! dc up -d; then
+  # 清掉可能残留的同名容器（例如之前手工跑过或上次转换中断）
+  if ! reset_container; then
+    if [ "$legacy_was_active" = "true" ]; then
+      info "回滚：重新拉起 ${SERVICE_NAME}"
+      systemctl start "$SERVICE_NAME" 2>/dev/null || warn "回滚失败，请手动执行: systemctl start $SERVICE_NAME"
+    fi
+    fail "清理同名容器失败（配置已保留）。请手动执行: docker rm -f $APP_NAME"
+  fi
+
+  if ! dc up -d --force-recreate; then
     warn "txnode 启动命令失败"
     if [ "$legacy_was_active" = "true" ]; then
       info "回滚：重新拉起 ${SERVICE_NAME}"
@@ -1093,8 +1134,13 @@ do_install() {
   info "拉取镜像（首次较慢）..."
   dc pull || fail "镜像拉取失败。若是私有包未授权，请先 docker login ghcr.io；网络问题可配置镜像加速后重跑"
 
+  # 装/重装同一条路：先清同名容器，避免 compose 名字冲突
+  reset_container || fail "清理旧容器失败，安装中止"
+
   info "启动..."
-  dc up -d
+  if ! dc up -d --force-recreate; then
+    fail "启动失败，请检查上方 compose 输出"
+  fi
 
   sleep 5
   if ! docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -q "$APP_NAME.*Up"; then
@@ -1255,7 +1301,12 @@ do_start() {
   detect_deploy_mode
   ! is_installed && legacy_hint_or_fail "启动"
   info "启动..."
-  dc up -d
+  if ! dc up -d; then
+    # 常见失败：同名容器不属于当前 compose 项目（手工 docker run / 换过安装目录）
+    warn "直接启动失败，尝试清理同名容器后重试"
+    reset_container || fail "清理同名容器失败，请手动执行: docker rm -f $APP_NAME"
+    dc up -d || fail "启动失败，请检查上方 compose 输出"
+  fi
   sleep 3
   ok "已启动"; do_status
 }
@@ -1327,15 +1378,24 @@ do_upgrade() {
       info "当前镜像: $(docker inspect -f '{{.Config.Image}}' "$APP_NAME" 2>/dev/null || echo '-')"
       info "拉取最新镜像..."
       dc pull || fail "镜像拉取失败"
+
+      # 必须在 up 之前清掉旧容器：compose 只认得带自己 project 标签的容器，
+      # 手工 docker run 出来的同名容器会让 up 报 "container name is already in use"。
+      reset_container || fail "清理旧容器失败，升级中止（配置未改动）"
+
       info "重建容器..."
-      dc up -d
+      # --force-recreate 保证即使镜像 tag 未变也会按新配置重建
+      if ! dc up -d --force-recreate; then
+        fail "重建失败，请检查上方 compose 输出"
+      fi
+
       sleep 5
       if docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -q "$APP_NAME.*Up"; then
         ok "升级完成，容器运行中"
       else
         warn "容器未正常运行，最近日志："
         show_logs 20
-        fail "升级后启动失败"
+        fail "升级后启动失败。排查后可重试: txnode upgrade"
       fi
       ;;
     legacy)
@@ -1350,8 +1410,15 @@ do_upgrade() {
   if [ "$DEPLOY_MODE" = "docker" ]; then
     local reclaimed
     reclaimed=$(docker image prune -f 2>/dev/null | tail -1 || true)
-    [ -n "$reclaimed" ] && hint "镜像清理: $reclaimed"
+    # 注意：这里必须用 if 而不是 `[ -n ... ] && hint`。
+    # 后者作为函数最后一条语句时，当 reclaimed 为空（无镜像可清，很常见）
+    # 整个 `[ -n ]` 求值为 false → 函数返回非 0 → set -e 让脚本直接 exit 1，
+    # 明明升级成功却报失败。
+    if [ -n "$reclaimed" ]; then
+      hint "镜像清理: $reclaimed"
+    fi
   fi
+  return 0
 }
 
 # ════════════════════════════════════════════════════════════════════

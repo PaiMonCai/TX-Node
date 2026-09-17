@@ -137,6 +137,24 @@ bash deploy.sh purge         # 彻底清除（不可逆）
 bash deploy.sh help          # 帮助
 ```
 
+### 升级 / 安装 / 迁移时的容器清理（重要）
+
+`install`、`upgrade`、`migrate` 在启动容器前都会先**清理占用 `APP_NAME` 这个名字的旧容器**，再 `up -d --force-recreate`。原因是 `docker compose up -d` 只靠 `com.docker.compose.project` + `com.docker.compose.service` 两个标签识别「自己的旧容器」：
+
+- 如果同名容器是**手工 `docker run` 创建的**，或来自**换过 `INSTALL_DIR` 的另一次部署**，compose 认不出它属于本项目；
+- 于是 `up` 不会重建，而是直接报：
+  ```
+  Error response from daemon: Conflict. The container name "/tx-node" is already in use
+  by container "a057926f...". You have to remove (or rename) that container to be able
+  to reuse that name.
+  ```
+
+清理策略是「先让 compose 自己收，收不掉再按名字强删」：先 `compose down --remove-orphans`；若容器仍在，则 `docker rm -f <APP_NAME>` 兜底。这样正常部署不会被打断，只有真正认不出的残留容器才会被强制移除（会打印一条 `[!]` 警告说明原因）。
+
+> 用 `--force-recreate` 而不是裸 `up -d`，是为了保证即使镜像 tag 没变（还是 `latest`），容器也会按新配置重建。
+
+若你确实想保留某个手工容器，请在升级前先 `docker rename` 换个名字。
+
 ### 自定义安装路径
 
 默认装在 `/etc/txnode`（与 `install.sh` 的 `/etc/xboard-node` 分开，互不干扰）。需要换位置时用环境变量覆盖：

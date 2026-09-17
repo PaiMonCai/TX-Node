@@ -981,10 +981,22 @@ func applyMultiplex(base M, nc *model.NodeSpec) {
 }
 
 func applyProxyProtocol(base M, nc *model.NodeSpec) {
-	// if !nc.GetProxyProtocol() {
-	// 	return
-	// }
-	// base["proxy_protocol"] = true
+	if !nc.GetProxyProtocol() {
+		return
+	}
+	trustedCIDRs := nc.GetProxyProtocolTrustedCIDRs()
+	if len(trustedCIDRs) == 0 {
+		nlog.Core().Warn(
+			"proxy protocol requested but no trusted upstreams configured; keeping it disabled",
+			"setting", "network_settings.proxyProtocolTrustedCIDRs",
+		)
+		return
+	}
+	base["proxy_protocol"] = true
+	base["proxy_protocol_trusted_cidrs"] = trustedCIDRs
+	if nc.GetProxyProtocolAcceptNoHeader() {
+		base["proxy_protocol_accept_no_header"] = true
+	}
 }
 
 // extractECHInbound extracts ECH config for sing-box server (inbound).

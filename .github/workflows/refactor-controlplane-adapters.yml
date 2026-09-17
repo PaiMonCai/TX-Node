@@ -1,0 +1,83 @@
+name: Refactor control-plane adapters
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    if: github.head_ref == 'refactor/controlplane-adapters'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Route service through control-plane factory
+        shell: python
+        run: |
+          from pathlib import Path
+
+          service = Path('internal/service/service.go')
+          text = service.read_text()
+          old = '''func New(cfg *config.Config) *Service {
+          \tvar cp controlplane.ControlPlane
+          \tif cfg.IsStandalone() {
+          \t\tcp = controlplane.NewLocalControlPlane(cfg)
+          \t} else {
+          \t\tcp = controlplane.NewPanelControlPlane(cfg.Panel, cfg.WS, cfg.Kernel)
+          \t}
+          \treturn newService(cfg, cp)
+          }
+
+          // NewWithControlPlane creates a Service with an externally-provided
+          // ControlPlane. Used by the machine orchestrator to inject a
+          // MachinePanelControlPlane with WS mux routing.
+          '''
+          new = '''func New(cfg *config.Config) *Service {
+          \treturn newService(cfg, controlplane.NewForConfig(cfg))
+          }
+
+          // NewWithControlPlane creates a Service with an externally-provided
+          // ControlPlane. Used by the machine orchestrator to inject a
+          // MachineXboardControlPlane with WS mux routing.
+          '''
+          if old not in text:
+              raise SystemExit('service.New block did not match expected source')
+          service.write_text(text.replace(old, new, 1))
+
+          machine = Path('internal/machine/machine.go')
+          text = machine.read_text()
+          text, n1 = text.replace('// The registerFn is called by MachinePanelControlPlane.Initial() to expose', '// The registerFn is called by MachineXboardControlPlane.Initial() to expose', 1), 1
+          old_call = 'controlplane.NewMachinePanelControlPlane(perNodeClient, nodeCfg.Kernel, push, registerFn)'
+          new_call = 'controlplane.NewMachineXboardControlPlane(perNodeClient, nodeCfg.Kernel, push, registerFn)'
+          if old_call not in text:
+              raise SystemExit('machine control-plane constructor did not match expected source')
+          machine.write_text(text.replace(old_call, new_call, 1))
+      - name: Format
+        run: gofmt -w internal/service/service.go internal/machine/machine.go internal/controlplane/factory.go internal/controlplane/xboard.go
+      - name: Test
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+          GONOPROXY: github.com/PaiMonCai/Xray-core
+          GONOSUMDB: github.com/PaiMonCai/Xray-core
+        run: go test ./...
+      - name: Diff check
+        run: git diff --check
+      - name: Commit validated code changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add internal/service/service.go internal/machine/machine.go internal/controlplane/factory.go internal/controlplane/xboard.go
+          if git diff --cached --quiet; then
+            echo 'No code changes to commit'
+            exit 0
+          fi
+          git commit -m 'refactor: isolate Xboard behind control-plane adapter'
+          git push origin HEAD:${{ github.head_ref }}

@@ -1,0 +1,23 @@
+name: Temporary module checksum
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checksum:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Resolve and print sing-box checksum
+        run: |
+          go mod tidy
+          grep -E 'github.com/(PaiMonCai|sagernet)/sing-box' go.sum || true
+          git diff -- go.mod go.sum

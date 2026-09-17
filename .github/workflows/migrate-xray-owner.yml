@@ -25,11 +25,15 @@ jobs:
           grep -F 'replace github.com/xtls/xray-core => github.com/PaiMonCai/Xray-core v0.0.0-20260409213332-f47935539965' go.mod
       - name: Refresh module checksums
         env:
-          GOPROXY: direct
+          GOPROXY: https://proxy.golang.org,direct
+          GONOPROXY: github.com/PaiMonCai/Xray-core
+          GONOSUMDB: github.com/PaiMonCai/Xray-core
         run: go mod tidy
       - name: Test
         env:
-          GOPROXY: direct
+          GOPROXY: https://proxy.golang.org,direct
+          GONOPROXY: github.com/PaiMonCai/Xray-core
+          GONOSUMDB: github.com/PaiMonCai/Xray-core
         run: go test ./...
       - name: Commit
         run: |

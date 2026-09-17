@@ -39,12 +39,11 @@ jobs:
           test "$(head -n 1 go.mod)" = "module ${old}"
           sed -i "1c\\module ${new}" go.mod
 
-          # Module directive plus every Go source/test import are changed together.
+          # Replace only self-import paths. Do not run gofmt across the repository:
+          # this migration should remain a semantic path-only diff.
           while IFS= read -r -d '' file; do
             sed -i "s#${old}/internal#${new}/internal#g" "$file"
           done < <(find cmd internal -type f -name '*.go' -print0)
-
-          gofmt -w cmd internal
 
           # No stale self-imports may survive. cedar2025 kernel forks in go.mod are
           # intentionally unrelated and must remain until reviewed separately.

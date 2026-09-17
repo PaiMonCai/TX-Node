@@ -324,7 +324,7 @@ func (s *Service) initialSetup(ctx context.Context) error {
 	s.lastConfig = bootstrap.Config
 	s.metricsMu.Unlock()
 	s.lastConfigHash = computeConfigHash(bootstrap.Config)
-	s.updateUserState(bootstrap.Users)
+	s.updateUserState(bootstrap.Users, srcBootstrap)
 
 	nlog.Core().Info("initial snapshot ready",
 		"protocol", bootstrap.Config.Protocol,
@@ -598,7 +598,7 @@ func (s *Service) handleWSEvent(ctx context.Context, event controlplane.Event) {
 		if s.nodeLog != nil {
 			s.nodeLog.Info(fmt.Sprintf("users updated, %d users", len(event.Users)))
 		}
-		s.applyUserUpdate(ctx, event.Users, newHash)
+		s.applyUserUpdate(ctx, event.Users, newHash, srcWSFull)
 
 	case controlplane.EventSyncUserDelta:
 		if len(event.DeltaUsers) == 0 {
@@ -704,9 +704,9 @@ func (s *Service) applyPullResult(ctx context.Context, result pullResult) {
 		usersChanged := result.userHash != s.lastUserHash
 
 		if usersChanged && !configChanged {
-			s.applyUserUpdate(ctx, result.users, result.userHash)
+			s.applyUserUpdate(ctx, result.users, result.userHash, srcPollFull)
 		} else if usersChanged {
-			s.updateUserState(result.users)
+			s.updateUserState(result.users, srcPollFull)
 		}
 	}
 
@@ -717,14 +717,30 @@ func (s *Service) applyPullResult(ctx context.Context, result pullResult) {
 
 // ─── User state helpers ─────────────────────────────────────────────────────
 
-func (s *Service) updateUserState(users []model.UserSpec) {
+// userStateSource labels the code path that refreshed the user set.
+//
+// The removal probe below depends on this distinction: it answers whether the
+// panel signals a user removal through an explicit sync.user.delta, or merely
+// by omitting the user from a full list. A force-close-on-removal feature only
+// works if the former actually happens in production.
+type userStateSource string
+
+const (
+	srcBootstrap userStateSource = "bootstrap"       // initial handshake
+	srcWSFull    userStateSource = "ws_full"         // WS sync.users (full list)
+	srcPollFull  userStateSource = "poll_full"       // REST poll (full list)
+	srcDeltaAdd  userStateSource = "ws_delta_add"    // WS sync.user.delta action=add
+	srcDeltaRm   userStateSource = "ws_delta_remove" // WS sync.user.delta action=remove
+)
+
+func (s *Service) updateUserState(users []model.UserSpec, src userStateSource) {
 	if users == nil {
 		users = []model.UserSpec{}
 	}
-	_, _ = s.prepareUserState(users)
+	_, _ = s.prepareUserState(users, src)
 }
 
-func (s *Service) prepareUserState(users []model.UserSpec) (prevUsers []model.UserSpec, prevHash string) {
+func (s *Service) prepareUserState(users []model.UserSpec, src userStateSource) (prevUsers []model.UserSpec, prevHash string) {
 	if users == nil {
 		users = []model.UserSpec{}
 	}
@@ -734,7 +750,11 @@ func (s *Service) prepareUserState(users []model.UserSpec) (prevUsers []model.Us
 	s.metricsMu.RUnlock()
 	prevHash = s.lastUserHash
 
-	s.limiter.UpdateUsers(users)
+	// removed lists users present in the previous set but absent now. The value
+	// was always computed by the limiter but previously discarded.
+	removed := s.limiter.UpdateUsers(users)
+	s.logUserRemovalProbe(removed, src)
+
 	s.speedTracker.UpdateBuckets()
 
 	s.metricsMu.Lock()
@@ -742,6 +762,46 @@ func (s *Service) prepareUserState(users []model.UserSpec) (prevUsers []model.Us
 	s.metricsMu.Unlock()
 	s.lastUserHash = computeUserHash(users)
 	return prevUsers, prevHash
+}
+
+// logUserRemovalProbe is a temporary diagnostic probe.
+//
+// It records every user that vanished from the panel's user list, together with
+// the path that observed it. This settles a question the force-close design
+// hinges on: does the panel signal removal via an explicit sync.user.delta, or
+// simply by omitting the user from a full list?
+//
+// Observation guide:
+//   - source=ws_delta_remove  -> panel uses explicit deltas; a delta-triggered
+//     force-close would fire.
+//   - source=ws_full / poll_full only -> panel drops users by omission; a
+//     delta-only trigger would never fire, and the full-sync + confirmation
+//     approach is required.
+//
+// Delete once that question is answered.
+func (s *Service) logUserRemovalProbe(removed []int, src userStateSource) {
+	if len(removed) == 0 {
+		return
+	}
+	const maxIDs = 20
+	shown, extra := removed, 0
+	if len(shown) > maxIDs {
+		extra = len(shown) - maxIDs
+		shown = shown[:maxIDs]
+	}
+	args := []any{
+		"source", string(src),
+		"removed", len(removed),
+		"user_ids", shown,
+	}
+	if extra > 0 {
+		args = append(args, "more", extra)
+	}
+	if s.nodeLog != nil {
+		s.nodeLog.Info("probe: user removal observed", args...)
+	} else {
+		nlog.Core().Info("probe: user removal observed", args...)
+	}
 }
 
 func (s *Service) restoreUserState(users []model.UserSpec, hash string) {
@@ -795,12 +855,12 @@ func (s *Service) ensureRunning() bool {
 
 // applyUserUpdate replaces the full user set and hot-swaps the kernel.
 // Called from WS sync.users and REST polling.
-func (s *Service) applyUserUpdate(ctx context.Context, users []model.UserSpec, newHash string) {
+func (s *Service) applyUserUpdate(ctx context.Context, users []model.UserSpec, newHash string, src userStateSource) {
 	if !s.ensureRunning() {
 		return
 	}
 
-	prevUsers, prevHash := s.prepareUserState(users)
+	prevUsers, prevHash := s.prepareUserState(users, src)
 	added, removed, err := s.kernel.UpdateUsers(users)
 	if err != nil {
 		nlog.Core().Warn(fmt.Sprintf("UpdateUsers failed, restarting kernel: %v", err))
@@ -841,7 +901,7 @@ func (s *Service) applyUserDelta(ctx context.Context, action string, deltaUsers 
 			}
 		}
 
-		prevUsers, prevHash := s.prepareUserState(merged)
+		prevUsers, prevHash := s.prepareUserState(merged, srcDeltaAdd)
 		added, err := s.kernel.AddUsers(deltaUsers)
 		if err != nil {
 			nlog.Core().Warn(fmt.Sprintf("AddUsers failed: %v, falling back to UpdateUsers", err))
@@ -866,7 +926,7 @@ func (s *Service) applyUserDelta(ctx context.Context, action string, deltaUsers 
 			return
 		}
 
-		prevUsers, prevHash := s.prepareUserState(filtered)
+		prevUsers, prevHash := s.prepareUserState(filtered, srcDeltaRm)
 		removed, err := s.kernel.RemoveUsers(deltaUsers)
 		if err != nil {
 			nlog.Core().Warn(fmt.Sprintf("RemoveUsers failed: %v, falling back to UpdateUsers", err))

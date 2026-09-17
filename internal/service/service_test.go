@@ -34,8 +34,8 @@ type fakeKernel struct {
 	deviceLimitFunc func(string) (int, bool)
 }
 
-func (f *fakeKernel) Name() string { return "fake" }
-func (f *fakeKernel) Protocols() []string { return []string{"vless"} }
+func (f *fakeKernel) Name() string                      { return "fake" }
+func (f *fakeKernel) Protocols() []string               { return []string{"vless"} }
 func (f *fakeKernel) Capabilities() kernel.Capabilities { return kernel.Capabilities{} }
 func (f *fakeKernel) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) error {
 	_, _, _ = nodeConfig, users, tls
@@ -46,7 +46,7 @@ func (f *fakeKernel) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, t
 	f.running = true
 	return nil
 }
-func (f *fakeKernel) Stop() { f.running = false }
+func (f *fakeKernel) Stop()           { f.running = false }
 func (f *fakeKernel) IsRunning() bool { return f.running }
 func (f *fakeKernel) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) error {
 	_, _, _ = nodeConfig, users, tls
@@ -92,9 +92,9 @@ func (f *fakeKernel) CloseUserConnections(ctx context.Context, uuid string) erro
 	return nil
 }
 func (f *fakeKernel) SetSpeedLimitFunc(fn func(uuid string) *rate.Limiter) { f.speedLimitFunc = fn }
-func (f *fakeKernel) SetDeviceLimitFunc(fn func(uuid string) (int, bool)) { f.deviceLimitFunc = fn }
-func (f *fakeKernel) UpdateGlobalDevices(users map[int][]string) { _ = users }
-func (f *fakeKernel) ClearGlobalDevices() {}
+func (f *fakeKernel) SetDeviceLimitFunc(fn func(uuid string) (int, bool))  { f.deviceLimitFunc = fn }
+func (f *fakeKernel) UpdateGlobalDevices(users map[int][]string)           { _ = users }
+func (f *fakeKernel) ClearGlobalDevices()                                  {}
 
 func newTestService(k *fakeKernel) *Service {
 	sharedLimiter := limiter.New()
@@ -114,7 +114,7 @@ func TestApplyUserUpdatePreparesLimiterBeforeKernelUpdate(t *testing.T) {
 	s := newTestService(k)
 	s.lastConfig = &model.NodeSpec{Protocol: "vless"}
 	oldUsers := []model.UserSpec{{ID: 1, UUID: "uuid-old", SpeedLimit: 4}}
-	s.updateUserState(oldUsers)
+	s.updateUserState(oldUsers, srcBootstrap)
 
 	newUsers := []model.UserSpec{{ID: 2, UUID: "uuid-new", SpeedLimit: 8}}
 	k.onUpdateUsers = func(users []model.UserSpec) {
@@ -126,7 +126,7 @@ func TestApplyUserUpdatePreparesLimiterBeforeKernelUpdate(t *testing.T) {
 		}
 	}
 
-	s.applyUserUpdate(context.Background(), newUsers, computeUserHash(newUsers))
+	s.applyUserUpdate(context.Background(), newUsers, computeUserHash(newUsers), srcWSFull)
 
 	if got := k.updateCalls; got != 1 {
 		t.Fatalf("UpdateUsers call count = %d, want 1", got)
@@ -148,11 +148,11 @@ func TestApplyUserUpdateRestoresStateWhenKernelAndRestartFail(t *testing.T) {
 	s := newTestService(k)
 	s.lastConfig = &model.NodeSpec{Protocol: "vless"}
 	oldUsers := []model.UserSpec{{ID: 1, UUID: "uuid-old", SpeedLimit: 4}}
-	s.updateUserState(oldUsers)
+	s.updateUserState(oldUsers, srcBootstrap)
 	oldHash := s.lastUserHash
 
 	newUsers := []model.UserSpec{{ID: 2, UUID: "uuid-new", SpeedLimit: 8}}
-	s.applyUserUpdate(context.Background(), newUsers, computeUserHash(newUsers))
+	s.applyUserUpdate(context.Background(), newUsers, computeUserHash(newUsers), srcWSFull)
 
 	if got := k.startCalls; got != 1 {
 		t.Fatalf("Start call count = %d, want 1", got)
@@ -176,7 +176,7 @@ func TestApplyUserDeltaAddPreparesLimiterBeforeKernelUpdate(t *testing.T) {
 	s := newTestService(k)
 	s.lastConfig = &model.NodeSpec{Protocol: "vless"}
 	oldUsers := []model.UserSpec{{ID: 1, UUID: "uuid-old", SpeedLimit: 4}}
-	s.updateUserState(oldUsers)
+	s.updateUserState(oldUsers, srcBootstrap)
 
 	delta := []model.UserSpec{{ID: 2, UUID: "uuid-new", SpeedLimit: 8}}
 	k.onAddUsers = func(users []model.UserSpec) {
@@ -197,7 +197,6 @@ func TestApplyUserDeltaAddPreparesLimiterBeforeKernelUpdate(t *testing.T) {
 		t.Fatal("expected limiter for delta-added user after successful update")
 	}
 }
-
 
 func TestValidateNodeRuntimeRejectsUnsupportedDNSProvider(t *testing.T) {
 	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}

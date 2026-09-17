@@ -2,14 +2,19 @@
   "name": "访问审计",
   "code": "access_audit",
   "type": "feature",
-  "version": "2.1.0",
-  "description": "节点访问审计：tx-node(sing-box 内嵌) / audit-agent.py(xray 旁路) 上报连接日志，命中名单自动封禁 + TG 告警，分节点查看 + 节点级异常通报",
+  "version": "2.2.0",
+  "description": "节点访问审计：访问日志、规则命中、自动封禁、TG 告警、节点健康监控、数据分析与面板内设置",
   "author": "Hermes",
   "admin_menus": [
     {
       "title": "访问审计",
       "path": "/plugin/access-audit",
       "icon": "🛡️"
+    },
+    {
+      "title": "审计分析与设置",
+      "path": "/plugin/access-audit/insights",
+      "icon": "📊"
     }
   ],
   "config": {
@@ -40,7 +45,7 @@
     "report_retention_days": {
       "type": "number",
       "default": 30,
-      "label": "上报记录保留天数",
+      "label": "命中记录保留天数",
       "description": "命中记录超过 N 天自动清理（每天执行一次）"
     },
     "node_health_enabled": {
@@ -96,6 +101,18 @@
       "default": 3,
       "label": "访问日志保留天数",
       "description": "全量访问日志（节点开启 report_all 时上报）超过 N 天自动清理（每天执行）"
+    },
+    "analytics_enabled": {
+      "type": "number",
+      "default": 1,
+      "label": "启用数据分析聚合",
+      "description": "1=每 5 分钟维护小时级聚合；0=停止新增长期聚合数据"
+    },
+    "analytics_retention_days": {
+      "type": "number",
+      "default": 365,
+      "label": "分析聚合保留天数",
+      "description": "小时级聚合统计保留天数；不包含原始访问明细"
     }
   }
 }

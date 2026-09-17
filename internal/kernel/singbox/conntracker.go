@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/netip"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -209,8 +210,8 @@ func (t *ConnTracker) SetAuditor(r *audit.Reporter) {
 	t.auditor = r
 }
 
-// auditTarget extracts the audit target from connection metadata:
-// sniffed domain > proxy-protocol domain > destination IP.
+// auditTarget extracts the logical audit target from connection metadata:
+// sniffed domain > destination FQDN > destination IP.
 func auditTarget(metadata adapter.InboundContext) string {
 	if metadata.Domain != "" {
 		return metadata.Domain
@@ -258,9 +259,9 @@ func (t *ConnTracker) RoutedConnection(
 		us.addConn(sourceIP)
 	}
 
-	// tx-node audit: observe routed TCP connection (no-op when disabled)
+	logicalTarget := ""
 	if t.auditor != nil && uid > 0 {
-		t.auditor.Observe(uid, auditTarget(metadata), sourceIP)
+		logicalTarget = auditTarget(metadata)
 	}
 
 	connID := t.nextID()
@@ -276,14 +277,15 @@ func (t *ConnTracker) RoutedConnection(
 	}
 
 	return &trackedConn{
-		Conn:     conn,
-		tracker:  t,
-		us:       us,
-		userID:   uid,
-		connID:   connID,
-		sourceIP: sourceIP,
-		limiter:  lim,
-		ctx:      ctx,
+		Conn:        conn,
+		tracker:     t,
+		us:          us,
+		userID:      uid,
+		connID:      connID,
+		sourceIP:    sourceIP,
+		auditTarget: logicalTarget,
+		limiter:     lim,
+		ctx:         ctx,
 	}
 }
 
@@ -320,9 +322,9 @@ func (t *ConnTracker) RoutedPacketConnection(
 		us.addConn(sourceIP)
 	}
 
-	// tx-node audit: observe routed UDP connection (no-op when disabled)
+	logicalTarget := ""
 	if t.auditor != nil && uid > 0 {
-		t.auditor.Observe(uid, auditTarget(metadata), sourceIP)
+		logicalTarget = auditTarget(metadata)
 	}
 
 	connID := t.nextID()
@@ -333,14 +335,15 @@ func (t *ConnTracker) RoutedPacketConnection(
 	}
 
 	return &trackedPacketConn{
-		PacketConn: conn,
-		tracker:    t,
-		us:         us,
-		userID:     uid,
-		connID:     connID,
-		sourceIP:   sourceIP,
-		limiter:    lim,
-		ctx:        ctx,
+		PacketConn:  conn,
+		tracker:     t,
+		us:          us,
+		userID:      uid,
+		connID:      connID,
+		sourceIP:    sourceIP,
+		auditTarget: logicalTarget,
+		limiter:     lim,
+		ctx:         ctx,
 	}
 }
 
@@ -593,17 +596,41 @@ func (r *RateLimitedReadCloser) Read(b []byte) (int, error) {
 
 type trackedConn struct {
 	net.Conn
-	tracker  *ConnTracker
-	us       *userStats // per-user stats (upload/download atomics + IP tracking)
-	userID   int        // user ID for device tracking
-	connID   string
-	sourceIP string
-	limiter  *rate.Limiter
-	ctx      context.Context
-	closed   atomic.Bool
+	tracker     *ConnTracker
+	us          *userStats // per-user stats (upload/download atomics + IP tracking)
+	userID      int        // user ID for device tracking
+	connID      string
+	sourceIP    string
+	auditTarget string
+	auditOnce   sync.Once
+	limiter     *rate.Limiter
+	ctx         context.Context
+	closed      atomic.Bool
+}
+
+func (c *trackedConn) reportAudit(targetIP string) {
+	if c.auditTarget == "" || c.userID <= 0 || c.tracker == nil || c.tracker.auditor == nil {
+		return
+	}
+	c.auditOnce.Do(func() {
+		c.tracker.auditor.ObserveWithTargetIP(c.userID, c.auditTarget, targetIP, c.sourceIP)
+	})
+}
+
+// ReportTargetIP is discovered by the TX sing-box fork after a successful
+// outbound dial. The address is the exact remote selected by the dialer, not a
+// DNS candidate. Existing sing-box trackers that do not implement this method
+// are unaffected.
+func (c *trackedConn) ReportTargetIP(address netip.Addr) {
+	if address.IsValid() {
+		c.reportAudit(address.String())
+	}
 }
 
 func (c *trackedConn) Read(b []byte) (int, error) {
+	// Fallback for handler-based outbounds that bypass ConnectionManager and
+	// therefore cannot expose an exact remote address.
+	c.reportAudit("")
 	if c.limiter != nil {
 		if burst := c.limiter.Burst(); len(b) > burst {
 			b = b[:burst]
@@ -636,6 +663,7 @@ func (c *trackedConn) Read(b []byte) (int, error) {
 }
 
 func (c *trackedConn) Write(b []byte) (int, error) {
+	c.reportAudit("")
 	// Apply rate limiting before write
 	if c.limiter != nil {
 		if burst := c.limiter.Burst(); len(b) > burst {
@@ -666,6 +694,7 @@ func (c *trackedConn) Write(b []byte) (int, error) {
 }
 
 func (c *trackedConn) Close() error {
+	c.reportAudit("")
 	if c.closed.CompareAndSwap(false, true) {
 		if c.us != nil {
 			c.us.removeConn(c.sourceIP)
@@ -701,6 +730,7 @@ func (c *trackedConn) makeCountFunc(counter *atomic.Int64) N.CountFunc {
 }
 
 func (c *trackedConn) UnwrapReader() (io.Reader, []N.CountFunc) {
+	c.reportAudit("")
 	if c.us == nil {
 		return c.Conn, nil
 	}
@@ -708,6 +738,7 @@ func (c *trackedConn) UnwrapReader() (io.Reader, []N.CountFunc) {
 }
 
 func (c *trackedConn) UnwrapWriter() (io.Writer, []N.CountFunc) {
+	c.reportAudit("")
 	if c.us == nil {
 		return c.Conn, nil
 	}
@@ -722,17 +753,37 @@ func (c *trackedConn) WriterReplaceable() bool { return true }
 
 type trackedPacketConn struct {
 	N.PacketConn
-	tracker  *ConnTracker
-	us       *userStats
-	userID   int
-	connID   string
-	sourceIP string
-	limiter  *rate.Limiter
-	ctx      context.Context
-	closed   atomic.Bool
+	tracker     *ConnTracker
+	us          *userStats
+	userID      int
+	connID      string
+	sourceIP    string
+	auditTarget string
+	auditOnce   sync.Once
+	limiter     *rate.Limiter
+	ctx         context.Context
+	closed      atomic.Bool
+}
+
+func (c *trackedPacketConn) reportAudit(targetIP string) {
+	if c.auditTarget == "" || c.userID <= 0 || c.tracker == nil || c.tracker.auditor == nil {
+		return
+	}
+	c.auditOnce.Do(func() {
+		c.tracker.auditor.ObserveWithTargetIP(c.userID, c.auditTarget, targetIP, c.sourceIP)
+	})
+}
+
+// ReportTargetIP implements the optional capability consumed by the TX
+// sing-box fork after UDP destination selection.
+func (c *trackedPacketConn) ReportTargetIP(address netip.Addr) {
+	if address.IsValid() {
+		c.reportAudit(address.String())
+	}
 }
 
 func (c *trackedPacketConn) ReadPacket(buffer *buf.Buffer) (singM.Socksaddr, error) {
+	c.reportAudit("")
 	dest, err := c.PacketConn.ReadPacket(buffer)
 	if err == nil {
 		n := int64(buffer.Len())
@@ -761,6 +812,7 @@ func (c *trackedPacketConn) ReadPacket(buffer *buf.Buffer) (singM.Socksaddr, err
 }
 
 func (c *trackedPacketConn) WritePacket(buffer *buf.Buffer, dest singM.Socksaddr) error {
+	c.reportAudit("")
 	n := int64(buffer.Len())
 
 	// Apply rate limiting before write
@@ -789,6 +841,7 @@ func (c *trackedPacketConn) WritePacket(buffer *buf.Buffer, dest singM.Socksaddr
 }
 
 func (c *trackedPacketConn) Close() error {
+	c.reportAudit("")
 	if c.closed.CompareAndSwap(false, true) {
 		if c.us != nil {
 			c.us.removeConn(c.sourceIP)
@@ -822,6 +875,7 @@ func (c *trackedPacketConn) makeCountFunc(counter *atomic.Int64) N.CountFunc {
 }
 
 func (c *trackedPacketConn) UnwrapPacketReader() (N.PacketReader, []N.CountFunc) {
+	c.reportAudit("")
 	if c.us == nil {
 		return c.PacketConn, nil
 	}
@@ -829,6 +883,7 @@ func (c *trackedPacketConn) UnwrapPacketReader() (N.PacketReader, []N.CountFunc)
 }
 
 func (c *trackedPacketConn) UnwrapPacketWriter() (N.PacketWriter, []N.CountFunc) {
+	c.reportAudit("")
 	if c.us == nil {
 		return c.PacketConn, nil
 	}

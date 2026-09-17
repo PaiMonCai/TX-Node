@@ -6,7 +6,7 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main, master]
-  # 手动触发：Actions 页 Run workflow，可选是否更新 latest 镜像标签
+  # 手动触发仅用于验证构建/镜像；正式 Release 只由 v* tag 产生。
   workflow_dispatch:
     inputs:
       push_latest:
@@ -42,7 +42,7 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     needs: test
-    # 仅手动触发或打 tag 才构建二进制（push 只跑 test）
+    # 仅手动触发或打 tag 才构建二进制（普通 push 只跑 test）
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
     strategy:
       matrix:
@@ -70,13 +70,27 @@ jobs:
             make build-linux-arm64
           fi
 
-      - name: Upload xboard-node artifact
+      - name: Upload tx-node artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tx-node-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: tx-node-${{ matrix.goos }}-${{ matrix.goarch }}
+
+      - name: Upload txctl artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: txctl-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: txctl-${{ matrix.goos }}-${{ matrix.goarch }}
+
+      # Legacy filenames are kept for one compatibility window so existing
+      # automation can migrate without an abrupt break.
+      - name: Upload xboard-node compatibility artifact
         uses: actions/upload-artifact@v4
         with:
           name: xboard-node-${{ matrix.goos }}-${{ matrix.goarch }}
           path: xboard-node-${{ matrix.goos }}-${{ matrix.goarch }}
 
-      - name: Upload xbctl artifact
+      - name: Upload xbctl compatibility artifact
         uses: actions/upload-artifact@v4
         with:
           name: xbctl-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -117,8 +131,6 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          # GHA 构建缓存：QEMU arm64 编译第二次起显著提速；
-          # mode=max 缓存所有构建阶段（含 go mod download / 编译中间层）
           cache-from: type=gha,scope=txnode
           cache-to: type=gha,mode=max,scope=txnode
           tags: |
@@ -130,7 +142,8 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     needs: build
-    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+    # Release 必须来自真实语义版本标签，禁止再创建名为 main 的 Release。
+    if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
     steps:
@@ -147,9 +160,13 @@ jobs:
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'main' }}
-          make_latest: ${{ startsWith(github.ref, 'refs/tags/') }}
+          tag_name: ${{ github.ref_name }}
+          make_latest: true
           files: |
+            dist/tx-node-linux-amd64
+            dist/tx-node-linux-arm64
+            dist/txctl-linux-amd64
+            dist/txctl-linux-arm64
             dist/xboard-node-linux-amd64
             dist/xboard-node-linux-arm64
             dist/xbctl-linux-amd64

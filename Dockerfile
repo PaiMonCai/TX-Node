@@ -14,16 +14,20 @@ RUN CGO_ENABLED=0 go build -ldflags "-s -w \
     -X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev) \
     -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     -tags "with_quic with_utls with_wireguard with_clash_api" \
-    -o xboard-node ./cmd/xboard-node
+    -o tx-node ./cmd/xboard-node
 
 # Runtime stage — sing-box & xray-core are embedded as Go libraries
 FROM alpine:3.20
 
 RUN apk add --no-cache ca-certificates tzdata
 
-COPY --from=builder /build/xboard-node /usr/local/bin/xboard-node
+COPY --from=builder /build/tx-node /usr/local/bin/tx-node
 
-RUN mkdir -p /etc/xboard-node
+# Keep the legacy executable name and in-container config path as compatibility
+# aliases. New deployments should use the tx-node command and host-side
+# /etc/txnode layout managed by deploy.sh.
+RUN ln -s /usr/local/bin/tx-node /usr/local/bin/xboard-node \
+    && mkdir -p /etc/xboard-node
 
 WORKDIR /etc/xboard-node
 
@@ -33,7 +37,7 @@ WORKDIR /etc/xboard-node
 #     -e apiHost=https://panel.example.com \
 #     -e apiKey=YOUR_TOKEN \
 #     -e nodeID=1 \
-#     ghcr.io/cedar2025/xboard-node:latest
+#     ghcr.io/paimoncai/tx-node:latest
 #
 # Supported env vars:
 #   apiHost  / API_HOST    → panel URL
@@ -46,5 +50,5 @@ WORKDIR /etc/xboard-node
 #   keyFile  / KEY_FILE    → TLS key path
 #   logLevel / LOG_LEVEL   → log level
 
-ENTRYPOINT ["xboard-node"]
+ENTRYPOINT ["tx-node"]
 CMD ["-c", "/etc/xboard-node/config.yml"]

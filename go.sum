@@ -53,8 +53,8 @@ github.com/BurntSushi/xgb v0.0.0-20160522181843-27f122750802/go.mod h1:IVnqGOEym
 github.com/OneOfOne/xxhash v1.2.2/go.mod h1:HSdplMjZKSmBqAxg5vPj2TmRDmfkzw+cTzAElWljhcU=
 github.com/PaiMonCai/Xray-core v0.0.0-20260409213332-f47935539965 h1:kF/cJ2oe6LM8Gcq0+FOOKqGPXc+i6AxevRcS2b0nMuQ=
 github.com/PaiMonCai/Xray-core v0.0.0-20260409213332-f47935539965/go.mod h1:OXMlhBloFry8mw0KwWLWLd3RQyXJzEYsCGlgsX36h60=
-github.com/PaiMonCai/sing-box v1.14.0-alpha.2.0.20260316103356-2e665cb7e295 h1:R6wwiJLjuabNSZ6sAaxgY6IlYWDUq2HZgQNlm/3aMBM=
-github.com/PaiMonCai/sing-box v1.14.0-alpha.2.0.20260316103356-2e665cb7e295/go.mod h1:DTyWqWrjh/DqOHynCUgMhW8fgrkctleficRKwQmh668=
+github.com/PaiMonCai/sing-box v1.14.0-alpha.2.0.20260917144113-eece7143139b h1:EbDaur7p7C8wEjg7QZLXNOLWFKGKsCELwzhbKPj80zA=
+github.com/PaiMonCai/sing-box v1.14.0-alpha.2.0.20260917144113-eece7143139b/go.mod h1:DTyWqWrjh/DqOHynCUgMhW8fgrkctleficRKwQmh668=
 github.com/PuerkitoBio/purell v1.1.0/go.mod h1:c11w/QuzBsJSee3cPx9rAFu61PvFxuPbtSwDGJws/X0=
 github.com/PuerkitoBio/purell v1.1.1 h1:WEQqlqaGbrPkxLJWfBwQmfEAE1Z7ONdDLqrN38tNFfI=
 github.com/PuerkitoBio/purell v1.1.1/go.mod h1:c11w/QuzBsJSee3cPx9rAFu61PvFxuPbtSwDGJws/X0=

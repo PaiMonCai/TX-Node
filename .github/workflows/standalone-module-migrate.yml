@@ -1,0 +1,74 @@
+name: Standalone module migration
+
+on:
+  push:
+    branches: [refactor/standalone-tx-node]
+    paths:
+      - '.github/workflows/standalone-module-migrate.yml'
+      - '.github/standalone-module-migrate.trigger'
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/standalone-tx-node
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Rewrite module identity atomically
+        shell: bash
+        run: |
+          set -euo pipefail
+          old='github.com/cedar2025/xboard-node'
+          new='github.com/PaiMonCai/TX-Node'
+
+          # Module directive plus every Go source/test import are changed together.
+          sed -i "1s#^module ${old}$#module ${new}#" go.mod
+          while IFS= read -r -d '' file; do
+            sed -i "s#${old}/internal#${new}/internal#g" "$file"
+          done < <(find cmd internal -type f -name '*.go' -print0)
+
+          gofmt -w cmd internal
+
+          # No stale self-imports may survive. cedar2025 kernel forks in go.mod are
+          # intentionally unrelated and must remain until reviewed separately.
+          if grep -R --line-number --fixed-strings "${old}/internal" cmd internal; then
+            echo 'stale Xboard-Node self import remains' >&2
+            exit 1
+          fi
+          grep -qx "module ${new}" go.mod
+
+      - name: Run regression tests
+        run: |
+          set -euo pipefail
+          go test ./internal/...
+          go test ./cmd/...
+          go test ./...
+          git diff --check
+
+      - name: Commit module migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'No migration changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add go.mod cmd internal
+          git commit -m 'refactor: move Go module identity to PaiMonCai/TX-Node'
+          git push origin HEAD:refactor/standalone-tx-node

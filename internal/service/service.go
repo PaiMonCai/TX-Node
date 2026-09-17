@@ -155,20 +155,25 @@ func newService(cfg *config.Config, cp controlplane.ControlPlane) *Service {
 	// are always correct for this instance.
 	if cfg.Audit.Enabled {
 		if sb, ok := k.(*singbox.SingBox); ok {
-			sb.SetAuditor(audit.New(audit.Config{
-				Enabled:       cfg.Audit.Enabled,
-				ReportAll:     cfg.Audit.ReportAll,
-				BatchMax:      cfg.Audit.BatchMax,
-				FlushInterval: cfg.Audit.FlushInterval,
-				RulesRefresh:  cfg.Audit.RulesRefresh,
-				QueueCap:      cfg.Audit.QueueCap,
-			}, audit.PanelAuth{
-				BaseURL:   cfg.Panel.URL,
-				Token:     cfg.Panel.Token,
-				NodeID:    cfg.Panel.NodeID,
-				NodeType:  cfg.Panel.NodeType,
-				MachineID: cfg.Panel.MachineID,
-			}))
+			target, targetOK := controlplane.AuditTargetOf(cp)
+			if !targetOK {
+				nlog.Core().Warn("audit enabled but control plane does not expose audit target")
+			} else {
+				sb.SetAuditor(audit.New(audit.Config{
+					Enabled:       cfg.Audit.Enabled,
+					ReportAll:     cfg.Audit.ReportAll,
+					BatchMax:      cfg.Audit.BatchMax,
+					FlushInterval: cfg.Audit.FlushInterval,
+					RulesRefresh:  cfg.Audit.RulesRefresh,
+					QueueCap:      cfg.Audit.QueueCap,
+				}, audit.PanelAuth{
+					BaseURL:   target.BaseURL,
+					Token:     target.Token,
+					NodeID:    target.NodeID,
+					NodeType:  target.NodeType,
+					MachineID: target.MachineID,
+				}))
+			}
 		} else {
 			nlog.Core().Warn("audit enabled but kernel is not sing-box, skipping",
 				"kernel", cfg.Kernel.Type)

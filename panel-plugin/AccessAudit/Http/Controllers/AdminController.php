@@ -14,21 +14,29 @@ use Plugin\AccessAudit\Services\AuditProcessor;
 
 class AdminController extends Controller
 {
-    /** stats 结果进程内缓存（仪表盘数字允许 60s 滞后） */
-    private static ?array $statsCache = null;
-    private static int $statsCachedAt = 0;
-
     public function page()
     {
-        return response()->view('AccessAudit::admin');
+        // 主审计页与分析页保持独立，但在页头提供明确入口。
+        // 这里做轻量 HTML 注入，避免把已经很大的 admin.blade.php 再拆改一遍。
+        $html = view('AccessAudit::admin')->render();
+        $needle = '<span class="aa-pagehead-meta" id="headClock"></span>';
+        $link = '<a class="aa-btn aa-btn--ghost aa-btn--sm" href="/plugin/access-audit/insights" '
+            . 'style="text-decoration:none" title="打开长期趋势、排行和插件设置">'
+            . '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+            . '<path d="M4 20V10M10 20V4M16 20v-6M22 20H2"/></svg>数据分析与设置</a>';
+
+        if (str_contains($html, $needle)) {
+            $html = str_replace($needle, $needle . $link, $html);
+        }
+
+        return response($html);
     }
 
     public function stats()
     {
-        if (self::$statsCache !== null && time() - self::$statsCachedAt < 60) {
-            return response()->json(['data' => self::$statsCache]);
-        }
-
+        // 仪表盘是实时状态页：每次请求直接从数据库读取。
+        // 之前的 60 秒进程内缓存会导致“日志表已有新记录，但顶部仍显示 0”，
+        // 且 Octane 多 worker 下各 worker 缓存失效时间不同，视觉上更容易错乱。
         $now = time();
         $todayStart = strtotime('today');
         $yesterdayStart = $todayStart - 86400;
@@ -36,7 +44,7 @@ class AdminController extends Controller
         $data = [
             'rules_total' => AuditRule::query()->count(),
             'rules_enabled' => AuditRule::query()->where('enabled', 1)->count(),
-            // 大表全表 COUNT(*) 在百万行级要数秒，仪表盘总数用估算值
+            // 大表总数仍使用 information_schema 估算；首页实际展示的“今日”指标均为精确查询。
             'reports_total' => self::approxRowCount('audit_reports'),
             'reports_today' => AuditReport::query()->where('created_at', '>=', $todayStart)->count(),
             'bans_total' => AuditBanLog::query()->where('action', 'ban')->count(),
@@ -52,8 +60,6 @@ class AdminController extends Controller
         // 禁止按小时循环查询（24 次 COUNT 会把连接占满）。
         $data += self::trendData($now, $todayStart, $yesterdayStart);
 
-        self::$statsCache = $data;
-        self::$statsCachedAt = $now;
         return response()->json(['data' => $data]);
     }
 
@@ -146,7 +152,7 @@ class AdminController extends Controller
 
     /**
      * information_schema 的行数估算（InnoDB 统计值，误差可接受）。
-     * 读取失败时退回精确 COUNT。
+     * 读取失败时退回对应表的精确 COUNT。
      */
     private static function approxRowCount(string $table): int
     {
@@ -160,9 +166,10 @@ class AdminController extends Controller
                 return (int) $row->n;
             }
         } catch (\Throwable $e) {
-            // information_schema 不可读（权限等）时退回
+            // information_schema 不可读（权限等）时退回精确 COUNT
         }
-        return (int) AuditReport::query()->toBase()->count();
+
+        return (int) \Illuminate\Support\Facades\DB::table($table)->count();
     }
 
     // ── 节点维度 ──────────────────────────────────────────────

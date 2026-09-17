@@ -209,6 +209,41 @@ INSTALL_DIR=/opt/tx-node bash deploy.sh install
 
 可用变量：`INSTALL_DIR`、`APP_NAME`、`IMAGE`、`CLI_LINK`，以及只读探测用的 `LEGACY_INSTALL_ROOT`（默认 `/etc/xboard-node`）。
 
+### 健康检查与节点自愈（`/healthz`）
+
+给实例配上 `health_port` 后会起一个轻量 HTTP 端点。因为部署用的是 `network_mode: host`，
+**在宿主机上直接就能查**，不用进容器：
+
+```bash
+curl -fsS http://127.0.0.1:<health_port>/healthz
+# {"status":"ok"}
+```
+
+机器模式下这个端点反映**真实节点状态**：只要有节点启动失败（最常见是端口被占用），
+它在重试退避期间就返回 503：
+
+```json
+{"status":"degraded","nodes":2,"failed":2}
+```
+
+这修掉了以前「节点全部挂掉、容器却显示健康」的问题。
+
+节点失败后**会自动重试**，不会一次失败就永久躺平：退避从 15 秒起、每次翻倍、上限 5 分钟；
+如果节点是稳定运行超过 1 分钟之后才挂的，退避计数归零、立即重试。日志形如：
+
+```
+ERROR [core] machine node exited with error node_id=1 error=... attempt=1 retry_in=15s
+WARN  [core] machine has failing nodes, they will be retried with backoff failed=2 total=2 machine_id=16
+```
+
+> **host 网络下出现 `bind: address already in use`，通常不是节点自身的问题。**
+> 节点端口直接占用宿主机端口，报这个错多半意味着**同一份节点配置已经在别处跑着**
+> —— 比如老的 `install.sh` 部署没停干净，或两套部署并存。
+> 用 `ss -lntup | grep <端口>` 找出占用者。
+
+> 想在 Docker 的 `healthcheck` 里用这个端点，镜像内需要有 curl。
+> 官方镜像基于 alpine、未预装，可自行 `apk add --no-cache curl`。
+
 ### 配置校验（`validate`）
 
 `bash deploy.sh validate` 会做区段感知检查（能区分 `panel.token` 与 `machine.token`，不会串味），覆盖：

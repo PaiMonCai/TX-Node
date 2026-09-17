@@ -70,6 +70,17 @@ func runWithReload(initialRoot *config.RootConfig, configPath string) {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
+			// A machine whose every node failed to start (e.g. port already in
+			// use) used to answer 200 here, hiding a completely dead deployment
+			// from any supervisor. Report 503 while nodes sit in backoff.
+			// Aggregate also reports whether any machine instance exists at all:
+			// a plain node-mode deployment has no orchestrator and must not be
+			// treated as degraded just because nothing reported in.
+			if agg, reported := machine.GlobalHealth().Aggregate(); reported && agg.Failed > 0 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				fmt.Fprintf(w, `{"status":"degraded","nodes":%d,"failed":%d}`, agg.Total, agg.Failed)
+				return
+			}
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(`{"status":"ok"}`))
 		})

@@ -51,8 +51,57 @@ type Orchestrator struct {
 	// for sync.nodes events without blocking the main loop.
 	runCtx context.Context
 
+	// wantedNodes is the number of nodes the panel last told us to run. It is
+	// the denominator for the health snapshot.
+	wantedNodes int
+
+	// failures tracks backoff state for nodes whose service exited with an
+	// error. Guarded by mu.
+	failures map[int]*nodeFailure
+
+	// reportedFailed is the last failure count written to the log, so the
+	// warning is emitted on change only instead of once per discovery tick.
+	// Guarded by mu.
+	reportedFailed int
+
 	pullInterval time.Duration
 	pushInterval time.Duration
+}
+
+// nodeFailure is the backoff bookkeeping for one node.
+type nodeFailure struct {
+	count     int
+	nextRetry time.Time
+	lastErr   error
+}
+
+const (
+	// First retry after a failed start waits this long.
+	failureBackoffInitial = 15 * time.Second
+	// ...and never longer than this, no matter how many attempts failed.
+	failureBackoffMax = 5 * time.Minute
+	// Caps the shift so the exponential curve cannot overflow.
+	backoffMaxShift = 10
+	// A node that stayed up at least this long before failing was healthy at
+	// some point, so its backoff counter restarts instead of compounding.
+	stableRunThreshold = 60 * time.Second
+)
+
+// backoffFor returns how long to wait before the nth retry (1-based).
+// Pure function, kept separate so it can be tested without a panel.
+func backoffFor(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	shift := attempt - 1
+	if shift > backoffMaxShift {
+		shift = backoffMaxShift
+	}
+	d := failureBackoffInitial << shift
+	if d <= 0 || d > failureBackoffMax {
+		d = failureBackoffMax
+	}
+	return d
 }
 
 // New creates a machine orchestrator from the given config.
@@ -68,6 +117,7 @@ func New(cfg *config.Config) *Orchestrator {
 		nodes:     make(map[int]*nodeHandle),
 		mailboxes: make(map[int]*controlplane.NodeMailbox),
 		statuses:  make(map[int]chan<- controlplane.StatusChange),
+		failures:  make(map[int]*nodeFailure),
 	}
 }
 
@@ -80,8 +130,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	}
 
 	o.applyIntervals(nodesResp.BaseConfig)
+	o.setWanted(len(nodesResp.Nodes))
 	nlog.Core().Info(fmt.Sprintf("machine %d: discovered %d nodes",
 		o.cfg.Machine.MachineID, len(nodesResp.Nodes)))
+
+	// Stop contributing to /healthz once this orchestrator is gone, otherwise a
+	// stale "degraded" snapshot would outlive the instance that produced it.
+	defer globalHealth.Remove(o.cfg.InstanceID)
 
 	// Start machine-level WS as early as possible so sync.nodes can reach an
 	// empty machine before the first node is attached.
@@ -91,6 +146,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	for _, n := range nodesResp.Nodes {
 		o.startNode(ctx, n)
 	}
+	o.reportHealth()
 
 	discoveryTicker := time.NewTicker(o.pullInterval)
 	statusTicker := time.NewTicker(o.pushInterval)
@@ -117,6 +173,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	o.mu.Lock()
 	if _, exists := o.nodes[mn.ID]; exists {
+		o.mu.Unlock()
+		return
+	}
+	// Still serving a backoff from an earlier failure: leave it parked until
+	// the window expires. Without this a node that dies instantly (port
+	// already in use) would be restarted on every single discovery tick.
+	if f, ok := o.failures[mn.ID]; ok && time.Now().Before(f.nextRetry) {
 		o.mu.Unlock()
 		return
 	}
@@ -170,14 +233,94 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	nlog.Core().Info(fmt.Sprintf("machine: starting node %d (%s/%s)",
 		mn.ID, mn.Type, mn.Name))
 
+	startedAt := time.Now()
 	go func() {
 		defer close(done)
 		defer o.unregisterNode(mn.ID)
 		if err := svc.Run(nodeCtx); err != nil {
-			nlog.Core().Error("machine node exited with error",
-				"node_id", mn.ID, "error", err)
+			o.recordFailure(mn.ID, err, startedAt)
+			return
 		}
+		// Clean exit (context cancelled by stopNode / stopAll), not a failure.
+		o.clearFailure(mn.ID)
 	}()
+}
+
+// recordFailure parks a node in exponential backoff and logs the attempt.
+// startedAt is when the node was launched: if it ran long enough to count as
+// stable, the backoff counter restarts rather than compounding old failures.
+func (o *Orchestrator) recordFailure(nodeID int, err error, startedAt time.Time) {
+	o.mu.Lock()
+	f, ok := o.failures[nodeID]
+	if !ok {
+		f = &nodeFailure{}
+		o.failures[nodeID] = f
+	}
+	if time.Since(startedAt) > stableRunThreshold {
+		f.count = 0
+	}
+	f.count++
+	f.lastErr = err
+	f.nextRetry = time.Now().Add(backoffFor(f.count))
+	count, retryIn := f.count, time.Until(f.nextRetry)
+	o.mu.Unlock()
+
+	nlog.Core().Error("machine node exited with error",
+		"node_id", nodeID, "error", err,
+		"attempt", count, "retry_in", retryIn.Round(time.Second).String())
+	o.reportHealth()
+}
+
+// clearFailure drops a node's backoff state after a clean run.
+func (o *Orchestrator) clearFailure(nodeID int) {
+	o.mu.Lock()
+	delete(o.failures, nodeID)
+	o.mu.Unlock()
+	o.reportHealth()
+}
+
+// reportHealth publishes the current node counts for /healthz.
+func (o *Orchestrator) reportHealth() {
+	o.mu.Lock()
+	wanted := o.wantedNodes
+	failed := 0
+	now := time.Now()
+	for _, f := range o.failures {
+		if now.Before(f.nextRetry) {
+			failed++
+		}
+	}
+	changed := failed != o.reportedFailed
+	o.reportedFailed = failed
+	o.mu.Unlock()
+	if failed > wanted {
+		failed = wanted
+	}
+	globalHealth.Report(o.cfg.InstanceID, NodeHealth{Total: wanted, Failed: failed})
+
+	// Without this the only trace of a fully broken machine would be one ERROR
+	// line per node at startup, which is easy to miss in a long log.
+	if changed && failed > 0 {
+		nlog.Core().Warn("machine has failing nodes, they will be retried with backoff",
+			"failed", failed, "total", wanted, "machine_id", o.machineIDForLog())
+	}
+}
+
+// machineIDForLog reads the machine id tolerating a nil Machine section, which
+// is possible for configs that never ran in machine mode. reportHealth is a
+// logging path and must never be the thing that takes the process down.
+func (o *Orchestrator) machineIDForLog() int {
+	if o.cfg == nil || o.cfg.Machine == nil {
+		return 0
+	}
+	return o.cfg.Machine.MachineID
+}
+
+// setWanted records how many nodes the panel expects this machine to run.
+func (o *Orchestrator) setWanted(n int) {
+	o.mu.Lock()
+	o.wantedNodes = n
+	o.mu.Unlock()
 }
 
 func (o *Orchestrator) stopNode(nodeID int) {
@@ -229,6 +372,8 @@ func (o *Orchestrator) rediscover(ctx context.Context) {
 		return
 	}
 
+	o.setWanted(len(nodesResp.Nodes))
+
 	wanted := make(map[int]panel.MachineNode, len(nodesResp.Nodes))
 	for _, n := range nodesResp.Nodes {
 		wanted[n.ID] = n
@@ -236,20 +381,37 @@ func (o *Orchestrator) rediscover(ctx context.Context) {
 
 	o.mu.Lock()
 	var toRemove []int
+	seen := make(map[int]bool)
 	for id := range o.nodes {
 		if _, ok := wanted[id]; !ok {
-			toRemove = append(toRemove, id)
+			if !seen[id] {
+				seen[id] = true
+				toRemove = append(toRemove, id)
+			}
+		}
+	}
+	// Nodes parked in backoff are absent from o.nodes (unregisterNode removed
+	// them), so they must be collected separately or their backoff state would
+	// leak for the lifetime of the process.
+	for id := range o.failures {
+		if _, ok := wanted[id]; !ok {
+			if !seen[id] {
+				seen[id] = true
+				toRemove = append(toRemove, id)
+			}
 		}
 	}
 	o.mu.Unlock()
 
 	for _, id := range toRemove {
-		o.stopNode(id)
+		o.stopNode(id)     // no-op when only backoff state remains
+		o.clearFailure(id) // node is gone from the panel; drop its backoff too
 	}
 
 	for _, n := range nodesResp.Nodes {
-		o.startNode(ctx, n) // no-op if already running
+		o.startNode(ctx, n) // no-op if already running or still in backoff
 	}
+	o.reportHealth()
 }
 
 // ─── Machine status reporting ────────────────────────────────────────────
@@ -358,6 +520,18 @@ func (o *Orchestrator) registerNode(nodeID int, st chan<- controlplane.StatusCha
 }
 
 func (o *Orchestrator) unregisterNode(nodeID int) {
+	// o.nodes MUST be cleaned up here, not only in stopNode. This runs from the
+	// node goroutine's defer, including when the service exits with an error.
+	// Leaving the handle behind would make startNode's "already running" guard
+	// skip the node forever — a node that failed once (bad port, panel hiccup)
+	// would never come back, even after the cause was fixed.
+	//
+	// The two maps are guarded by different mutexes; they are taken as separate
+	// critical sections (never nested) to keep lock ordering deadlock-free.
+	o.mu.Lock()
+	delete(o.nodes, nodeID)
+	o.mu.Unlock()
+
 	o.eventsMu.Lock()
 	delete(o.mailboxes, nodeID)
 	delete(o.statuses, nodeID)

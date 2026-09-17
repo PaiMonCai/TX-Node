@@ -15,8 +15,8 @@ import (
 	N "github.com/sagernet/sing/common/network"
 	"golang.org/x/time/rate"
 
-	"github.com/cedar2025/xboard-node/internal/audit"
-	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/PaiMonCai/TX-Node/internal/audit"
+	"github.com/PaiMonCai/TX-Node/internal/nlog"
 )
 
 // ipPool caches ipSnapshot maps to reduce allocations.

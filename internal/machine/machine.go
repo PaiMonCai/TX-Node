@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cedar2025/xboard-node/internal/config"
-	"github.com/cedar2025/xboard-node/internal/controlplane"
-	"github.com/cedar2025/xboard-node/internal/model"
-	"github.com/cedar2025/xboard-node/internal/monitor"
-	"github.com/cedar2025/xboard-node/internal/nlog"
-	"github.com/cedar2025/xboard-node/internal/panel"
-	"github.com/cedar2025/xboard-node/internal/service"
+	"github.com/PaiMonCai/TX-Node/internal/config"
+	"github.com/PaiMonCai/TX-Node/internal/controlplane"
+	"github.com/PaiMonCai/TX-Node/internal/model"
+	"github.com/PaiMonCai/TX-Node/internal/monitor"
+	"github.com/PaiMonCai/TX-Node/internal/nlog"
+	"github.com/PaiMonCai/TX-Node/internal/panel"
+	"github.com/PaiMonCai/TX-Node/internal/service"
 )
 
 // nodeHandle tracks a running node service.

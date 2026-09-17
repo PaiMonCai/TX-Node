@@ -17,7 +17,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/cedar2025/xboard-node/internal/config"
+	"github.com/PaiMonCai/TX-Node/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -30,7 +30,7 @@ const (
 	serviceName            = "xboard-node.service"
 	serviceFilePath        = "/etc/systemd/system/xboard-node.service"
 	defaultInstallRoot     = "/etc/xboard-node"
-	downloadBase           = "https://github.com/cedar2025/xboard-node/releases"
+	downloadBase           = "https://github.com/PaiMonCai/TX-Node/releases"
 )
 
 var (

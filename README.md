@@ -1,14 +1,8 @@
 # TX-Node
 
-Xboard 节点后端（fork of [cedar2025/Xboard-Node](https://github.com/cedar2025/Xboard-Node)），支持 `sing-box` / `xray-core` 双内核。
+TX-Node 是独立维护的 **Xboard 兼容节点运行时**，支持 `sing-box` / `xray-core` 双内核，并在节点运行、machine 自愈、访问审计、部署运维和发布流程上持续独立演进。
 
-**与原版唯一差异：内嵌 sing-box 内核的访问审计上报**（配合面板 AccessAudit 插件）。默认关闭，不启用时与原版行为完全一致，可直接替换原版使用。
-
-- 协议：V2Ray 系、Trojan、Shadowsocks、Hysteria2、TUIC、AnyTLS
-- 同步：WebSocket 推送 + REST 轮询双通道
-- 用户控制：限速、设备数限制、在线 IP 跟踪、热更新
-- 部署模式：单节点 / 机器（machine）/ 独立（standalone）
-- 多实例：单进程绑定多个面板 / 节点
+项目起源于 [cedar2025/Xboard-Node](https://github.com/cedar2025/Xboard-Node)。TX-Node 保留 Xboard 面板 API、认证字段和现有节点配置的协议兼容，但不再以周期性同步上游作为开发模式；上游后续修复会按需审查并选择性移植。独立维护策略见 [`docs/standalone.md`](docs/standalone.md)。
 
 ## 部署（Docker，推荐）
 
@@ -389,12 +383,8 @@ WARN [core] audit: report_all=false — only rule-matched targets are reported;
 
 详细文档见插件包内 `README.md`。
 
-## 原版用法（不变的部分）
+## Xboard 兼容与项目来源
 
-环境变量快捷模式（无审计）：`-e apiHost=... -e apiKey=... -e nodeID=...`；xbctl 多实例管理；自定义路由/出站（`docs-custom-routes.md` / `docs-custom-outbounds.md`）；ACME DNS-01 证书（`docs-dns-providers.md`）——均与上游一致，详见上游 README 和文档。
+TX-Node 保留 Xboard 面板协议及兼容配置字段。`xbctl` 与原生 `/etc/xboard-node` systemd 布局仅作为 legacy compatibility 保留；新的 Docker 运维入口是 `deploy.sh` / `txnode`。
 
-## License
-
-MPL-2.0（与上游一致）。
-
-> **Disclaimer**: This project is for educational and learning purposes only.
+项目历史来源于 [cedar2025/Xboard-Node](https://github.com/cedar2025/Xboard-Node)。后续 TX-Node 版本独立维护和发布；上游修复仅按需审查、移植，不再整分支同步。详见 [`docs/standalone.md`](docs/standalone.md)。

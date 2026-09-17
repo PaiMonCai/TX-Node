@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cedar2025/xboard-node/internal/config"
-	"github.com/cedar2025/xboard-node/internal/controlplane"
-	"github.com/cedar2025/xboard-node/internal/panel"
+	"github.com/PaiMonCai/TX-Node/internal/config"
+	"github.com/PaiMonCai/TX-Node/internal/controlplane"
+	"github.com/PaiMonCai/TX-Node/internal/panel"
 )
 
 // newTestOrchestrator builds an Orchestrator without touching the network.

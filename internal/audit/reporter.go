@@ -99,6 +99,7 @@ type rule struct {
 type Event struct {
 	UserID   int    `json:"user_id"`
 	Target   string `json:"target"`
+	TargetIP string `json:"target_ip,omitempty"`
 	SourceIP string `json:"source_ip,omitempty"`
 	Matched  bool   `json:"matched"` // 是否命中审计规则（report_all 模式下区分全量/命中）
 }
@@ -239,10 +240,17 @@ func (r *Reporter) Stats() Stats {
 	}
 }
 
-// Observe is called by the kernel for every routed connection.
-// report_all=false: only rule-matched targets are queued.
-// report_all=true: every connection is queued, with Matched marking rule hits.
+// Observe is the backward-compatible audit hook used by older kernel callers.
+// It preserves the original target/source-IP API and leaves TargetIP empty.
 func (r *Reporter) Observe(userID int, target, sourceIP string) {
+	r.ObserveWithTargetIP(userID, target, "", sourceIP)
+}
+
+// ObserveWithTargetIP records the logical target separately from the exact
+// destination IP selected by the outbound dialer when one is available. Rule
+// matching intentionally continues to use only target so existing domain/IP
+// audit rules keep their current semantics.
+func (r *Reporter) ObserveWithTargetIP(userID int, target, targetIP, sourceIP string) {
 	if !r.Enabled() || userID <= 0 || target == "" {
 		return
 	}
@@ -250,13 +258,14 @@ func (r *Reporter) Observe(userID int, target, sourceIP string) {
 	if target == "" {
 		return
 	}
+	targetIP = strings.TrimSpace(targetIP)
 	matched := r.match(target)
 	if !matched && !r.cfg.ReportAll {
 		return
 	}
 	r.queueMu.Lock()
 	if len(r.queue) < r.cfg.QueueCap {
-		r.queue = append(r.queue, Event{UserID: userID, Target: target, SourceIP: sourceIP, Matched: matched})
+		r.queue = append(r.queue, Event{UserID: userID, Target: target, TargetIP: targetIP, SourceIP: sourceIP, Matched: matched})
 		r.queueMu.Unlock()
 		return
 	}

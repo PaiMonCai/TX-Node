@@ -42,6 +42,14 @@ Normal node services obtain their control plane through `controlplane.NewForConf
 
 Machine orchestration is the exception because it owns the shared transport and therefore injects a per-node `ControlPlane` explicitly through `service.NewWithControlPlane`.
 
+## Optional capabilities
+
+Protocol-specific extensions that are not universal control-plane operations must be exposed as optional capability interfaces rather than by teaching core service code about a concrete panel.
+
+The first capability is `AuditTargetProvider`. Xboard adapters implement it to expose the remote identity required by the embedded access-audit reporter; `LocalControlPlane` intentionally does not. The service resolves the capability through `controlplane.AuditTargetOf` and therefore never reads Xboard panel credentials directly.
+
+Future adapters may implement the same capability if their backend supports the audit API, or omit it without changing core service behavior. New protocol-specific features should follow the same pattern when they do not belong in the base `ControlPlane` contract.
+
 ## Adding TuneX later
 
 A future TuneX protocol should be implemented as a new adapter, not by adding TuneX-specific branches throughout service/kernel code. The intended path is:
@@ -56,7 +64,7 @@ TX NodeSpec / UserSpec / Event / ReportPayload
 TX-Node service
 ```
 
-Before enabling a TuneX provider, define its authentication, bootstrap, configuration/user synchronization, reporting and push-event semantics, then add provider selection in the control-plane factory/config layer.
+Before enabling a TuneX provider, define its authentication, bootstrap, configuration/user synchronization, reporting and push-event semantics, then add provider selection in the control-plane factory/config layer. TuneX-specific extensions should be exposed through optional capability interfaces where possible.
 
 ## Compatibility principle
 

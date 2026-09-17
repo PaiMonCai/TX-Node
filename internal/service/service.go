@@ -121,18 +121,12 @@ func (b *apiBackoff) onFailure() {
 }
 
 func New(cfg *config.Config) *Service {
-	var cp controlplane.ControlPlane
-	if cfg.IsStandalone() {
-		cp = controlplane.NewLocalControlPlane(cfg)
-	} else {
-		cp = controlplane.NewPanelControlPlane(cfg.Panel, cfg.WS, cfg.Kernel)
-	}
-	return newService(cfg, cp)
+	return newService(cfg, controlplane.NewForConfig(cfg))
 }
 
 // NewWithControlPlane creates a Service with an externally-provided
 // ControlPlane. Used by the machine orchestrator to inject a
-// MachinePanelControlPlane with WS mux routing.
+// MachineXboardControlPlane with WS mux routing.
 func NewWithControlPlane(cfg *config.Config, cp controlplane.ControlPlane) *Service {
 	return newService(cfg, cp)
 }

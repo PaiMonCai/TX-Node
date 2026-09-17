@@ -13,6 +13,17 @@ TX-Node is maintained as an independent project. It originated from Xboard-Node 
 
 Do not periodically merge an upstream branch into TX-Node. For a useful upstream change: inspect the diff, confirm it applies, port the minimal change, adapt it to TX-Node, run tests, and release it under the TX-Node version line.
 
+## Control-plane boundary
+
+TX-Node core code depends on the `ControlPlane` interface and TX-native `NodeSpec` / `UserSpec` models rather than directly on a panel implementation.
+
+- `LocalControlPlane` provides panel-free standalone operation.
+- `XboardControlPlane` is the Xboard-compatible protocol adapter.
+- machine mode uses the corresponding machine Xboard adapter with a shared websocket transport.
+- future control planes such as TuneX should be added as new adapters instead of introducing panel-specific branches throughout service/kernel code.
+
+See [`controlplane.md`](controlplane.md) for the adapter contract and extension rules.
+
 ## Compatibility boundary
 
 The following are compatibility surfaces, not branding leftovers:
@@ -45,7 +56,16 @@ This source-identity change does not alter Xboard panel protocol compatibility.
 
 ## Kernel fork dependencies
 
-`go.mod` currently contains replacements to `cedar2025` kernel forks. Those are runtime dependencies, not repository branding. Do not remove them until their deltas are audited and TX-Node is proven against official upstream versions or TX-Node-maintained forks.
+TX-Node no longer depends on `cedar2025`-owned kernel forks. The current replacements are TX-Node-maintained forks:
+
+- `github.com/PaiMonCai/sing-box`, with the current Mieru patch baseline retained on `tx-mieru`;
+- `github.com/PaiMonCai/Xray-core`, with the current per-user bandwidth patch baseline retained on `tx-bandwidth`.
+
+The pinned commits are intentionally unchanged from the previously validated cedar fork revisions. Kernel upgrades are developed separately on `upgrade/sing-box-2026q3` and `upgrade/xray-core-2026q3`, with upstream changes reviewed and the small TX patch set reapplied/tested explicitly.
+
+## License provenance
+
+The historical `cedar2025/Xboard-Node` repository declares `MPL-2.0` in its README but does not currently expose a top-level LICENSE file through GitHub. TX-Node preserves project provenance and existing notices; before changing license terms or distributing under a different license, verify the licensing of inherited source and dependencies explicitly.
 
 ## Compatibility window
 

@@ -24,11 +24,86 @@ ghcr.io/paimoncai/tx-node:latest
 bash <(curl -fsSL https://raw.githubusercontent.com/PaiMonCai/TX-Node/main/deploy.sh)
 ```
 
+不带参数执行会进入**交互式运维面板**；带参数则非交互执行单个命令。
+
 脚本完成：Docker 环境检测/自动安装 → 交互式填写面板地址 / token / node_id（或 machine 模式 machine_id + 机器令牌）→ 生成 `/etc/xboard-node/config.yml` + `docker-compose.yml` → 拉镜像启动 → 部署后自检（容器存活 + 审计模块连通）。重复执行可升级/重配/卸载（幂等）。
 
 > 首次使用前确认 GitHub Packages 里 `tx-node` 包的可见性为 **Public**
 > （Packages → tx-node → Package settings → Change visibility），
 > 否则节点拉取镜像需要先 `docker login ghcr.io`。
+
+### 运维面板（`txnode`）
+
+装好后会注册一个快捷命令，直接敲 `txnode` 进面板（等价于 `bash deploy.sh`）：
+
+```
+txnode
+```
+
+面板会自动识别当前是 Docker 部署还是 systemd 部署（`install.sh` 装的），两种布局用同一套菜单：
+
+| 菜单 | 作用 |
+|---|---|
+| 1 查看状态 | 运行状态、配置摘要、健康检查 |
+| 2 查看日志 | 实时跟随（Ctrl+C 退出） |
+| 3 重启 | 改完配置后用这个 |
+| 4 启动 / 停止 | 子菜单：启动、停止、重启、暂停 |
+| 5 升级 | 拉最新镜像并重建（等价 `docker compose pull && up -d`） |
+| 6 修改配置 | 向导重填 / 手编 YAML / 改日志级别 / 开关审计 |
+| 7 配置校验与诊断 | 排错用，见下 |
+| 8 节点与机器管理 | 多节点 `nodes` 段增删、切换到 machine 模式 |
+| 9 备份 / 恢复 | 配置备份、回滚、清理旧备份 |
+| 10 卸载 | 移除容器 / 服务，**保留配置** |
+| 11 彻底清除 | 删容器、镜像、配置、systemd 单元（需手输 `PURGE` 确认） |
+
+几个概念上的区别，别用错：
+
+- **停止**：本次停掉，机器重启后仍会自启。
+- **暂停**：停止 **且** 取消开机自启（Docker 下会把 compose 的 `restart: always` 改成 `"no"`），适合长期下线。
+- **卸载**：去掉运行环境，配置留在 `/etc/xboard-node`，之后能重新装回来。
+- **彻底清除**：连配置一起删，**不可逆**。
+
+### 非交互命令
+
+适合写进脚本 / 定时任务：
+
+```bash
+bash deploy.sh install       # 安装 / 重新部署（交互式向导）
+bash deploy.sh upgrade       # 升级到最新镜像并重建
+bash deploy.sh status        # 查看状态与配置摘要
+bash deploy.sh start|stop|restart|pause
+bash deploy.sh logs          # 实时日志
+bash deploy.sh reconfigure   # 修改配置
+bash deploy.sh validate      # 配置校验
+bash deploy.sh doctor        # 环境与运行诊断
+bash deploy.sh backup|restore
+bash deploy.sh uninstall     # 卸载（保留配置）
+bash deploy.sh purge         # 彻底清除（不可逆）
+bash deploy.sh help          # 帮助
+```
+
+### 自定义安装路径
+
+默认装在 `/etc/xboard-node`。需要换位置（多实例 / 自定义布局）时用环境变量覆盖：
+
+```bash
+INSTALL_DIR=/opt/tx-node bash deploy.sh install
+```
+
+可用变量：`INSTALL_DIR`、`APP_NAME`、`IMAGE`、`CLI_LINK`。
+
+### 配置校验（`validate`）
+
+`bash deploy.sh validate` 会做区段感知检查（能区分 `panel.token` 与 `machine.token`，不会串味），覆盖：
+
+- `panel.url` 必填、必须是 `http(s)://`
+- token：`token` / `token_env` 至少一个；明文与 `token_env` 同时给会报歧义
+- 单节点模式缺 `panel.node_id`、机器模式缺 `machine.machine_id`
+- `kernel.type` 取值（**正确值是 `singbox` / `xray`**；写成 `sing-box` 会报错——`sing-box` 是产品名，配置值不带连字符）
+- TAB 缩进（YAML 不允许）
+- `audit.enabled=true` 但内核不是 `singbox`（内嵌审计只在 singbox 下工作）
+- `audit.enabled=true` 且 `report_all=false`（提示「规则没配 = 不上报」，见下方审计小节）
+
 
 ### 手动部署
 

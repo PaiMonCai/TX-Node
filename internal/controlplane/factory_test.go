@@ -10,13 +10,13 @@ func TestProviderForConfig(t *testing.T) {
 	if got := ProviderForConfig(&config.Config{}); got != ProviderXboard {
 		t.Fatalf("default provider = %q, want %q", got, ProviderXboard)
 	}
-	if got := ProviderForConfig(&config.Config{Standalone: &config.StandaloneConfig{}}); got != ProviderLocal {
+	if got := ProviderForConfig(&config.Config{Standalone: &config.StandaloneConfig{Enabled: true}}); got != ProviderLocal {
 		t.Fatalf("standalone provider = %q, want %q", got, ProviderLocal)
 	}
 }
 
 func TestNewForConfig(t *testing.T) {
-	local := NewForConfig(&config.Config{Standalone: &config.StandaloneConfig{}})
+	local := NewForConfig(&config.Config{Standalone: &config.StandaloneConfig{Enabled: true}})
 	if _, ok := local.(*LocalControlPlane); !ok {
 		t.Fatalf("standalone factory returned %T, want *LocalControlPlane", local)
 	}

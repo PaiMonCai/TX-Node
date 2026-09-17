@@ -1,0 +1,34 @@
+name: Migrate sing-box fork ownership
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: github.head_ref == 'upgrade/sing-box-2026q3'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Switch sing-box fork owner
+        run: |
+          sed -i 's#github.com/cedar2025/sing-box#github.com/PaiMonCai/sing-box#' go.mod
+          grep -F 'replace github.com/sagernet/sing-box => github.com/PaiMonCai/sing-box v1.14.0-alpha.2.0.20260316103356-2e665cb7e295' go.mod
+      - name: Test
+        run: go test ./...
+      - name: Commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add go.mod
+          git commit -m 'chore: move sing-box fork under PaiMonCai'
+          git push origin HEAD:${{ github.head_ref }}

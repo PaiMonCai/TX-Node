@@ -17,7 +17,4 @@ jobs:
           go-version-file: go.mod
           cache: false
       - name: Resolve and print sing-box checksum
-        run: |
-          go mod tidy
-          grep -E 'github.com/(PaiMonCai|sagernet)/sing-box' go.sum || true
-          git diff -- go.mod go.sum
+        run: go mod download -json github.com/PaiMonCai/sing-box@v1.14.0-alpha.2.0.20260917151157-106bcaf15fd3

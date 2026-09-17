@@ -24,8 +24,12 @@ jobs:
           sed -i 's#github.com/cedar2025/Xray-core#github.com/PaiMonCai/Xray-core#' go.mod
           grep -F 'replace github.com/xtls/xray-core => github.com/PaiMonCai/Xray-core v0.0.0-20260409213332-f47935539965' go.mod
       - name: Refresh module checksums
+        env:
+          GOPROXY: direct
         run: go mod tidy
       - name: Test
+        env:
+          GOPROXY: direct
         run: go test ./...
       - name: Commit
         run: |

@@ -518,7 +518,7 @@
       <div class="aa-tablebox">
         <table>
           <thead><tr>
-            <th>时间</th><th>节点</th><th>用户</th><th>目标</th><th>来源 IP</th><th>状态</th>
+            <th>时间</th><th>节点</th><th>用户</th><th>目标</th><th>目标 IP</th><th>来源 IP</th><th>状态</th>
           </tr></thead>
           <tbody id="logsBody"></tbody>
         </table>
@@ -619,7 +619,7 @@
       <div class="aa-tablebox">
         <table>
           <thead><tr>
-            <th>ID</th><th>用户</th><th>规则</th><th>目标</th><th>节点</th><th>来源 IP</th><th>触发封禁</th><th>时间</th>
+            <th>ID</th><th>用户</th><th>规则</th><th>目标</th><th>目标 IP</th><th>节点</th><th>来源 IP</th><th>触发封禁</th><th>时间</th>
           </tr></thead>
           <tbody id="reportsBody"></tbody>
         </table>
@@ -945,12 +945,13 @@ async function loadLogs(page) {
       <td>${nodeCell(x.node_id, x.node_name)}</td>
       <td class="aa-nowrap">${esc(x.user_email)}</td>
       <td><span class="aa-target aa-mono" title="${esc(x.target)}">${esc(x.target)}</span></td>
+      <td class="aa-mono aa-nowrap">${esc(x.target_ip || '-')}</td>
       <td class="aa-mono aa-nowrap">${esc(x.source_ip || '-')}</td>
       <td>${x.matched
         ? '<span class="aa-badge aa-badge--warn"><i class="aa-dot aa-dot--warn"></i>命中</span>'
         : '<span class="aa-badge aa-badge--ok"><i class="aa-dot aa-dot--ok"></i>正常</span>'}</td>
     </tr>`).join('')
-    || '<tr><td colspan="6" class="aa-empty">暂无记录 —— 节点 config.yml 开启 <code>audit.report_all</code> 后才有全量数据</td></tr>';
+    || '<tr><td colspan="7" class="aa-empty">暂无记录 —— 节点 config.yml 开启 <code>audit.report_all</code> 后才有全量数据</td></tr>';
 }
 
 /* 分页器：页码带省略号。
@@ -988,10 +989,10 @@ function renderPager(elId, cur, total, fn) {
 let lastLogsRows = [];
 function exportLogs() {
   if (!lastLogsRows.length) { alert('当前页没有可导出的数据'); return; }
-  const head = ['时间', '节点', '节点ID', '用户', '目标', '来源IP', '是否命中'];
+  const head = ['时间', '节点', '节点ID', '用户', '目标', '目标IP', '来源IP', '是否命中'];
   const lines = [head.join(',')];
   for (const x of lastLogsRows) {
-    const cells = [ts(x.created_at), x.node_name, x.node_id, x.user_email, x.target, x.source_ip || '', x.matched ? '命中' : '正常'];
+    const cells = [ts(x.created_at), x.node_name, x.node_id, x.user_email, x.target, x.target_ip || '', x.source_ip || '', x.matched ? '命中' : '正常'];
     lines.push(cells.map(v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`).join(','));
   }
   // 加 BOM 让 Excel 正确识别 UTF-8
@@ -1161,13 +1162,14 @@ async function loadReports() {
       <td class="aa-nowrap">${esc(x.user_email)}</td>
       <td>${esc(x.rule_name)}</td>
       <td><span class="aa-target aa-mono" title="${esc(x.target)}">${esc(x.target)}</span></td>
+      <td class="aa-mono aa-nowrap">${esc(x.target_ip || '-')}</td>
       <td>${nodeCell(x.node_id, nodeName(x.node_id))}</td>
       <td class="aa-mono aa-nowrap">${esc(x.source_ip || '-')}</td>
       <td>${x.banned
         ? '<span class="aa-badge aa-badge--no"><i class="aa-dot aa-dot--no"></i>已封禁</span>'
         : '<span class="aa-badge aa-badge--mute">否</span>'}</td>
       <td class="aa-nowrap aa-mono">${ts(x.created_at)}</td>
-    </tr>`).join('') || '<tr><td colspan="8" class="aa-empty">暂无记录</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="9" class="aa-empty">暂无记录</td></tr>';
 }
 
 /* ── 封禁管理 ── */

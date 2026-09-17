@@ -19,7 +19,7 @@ use Plugin\AccessAudit\Services\RuleMatcher;
  * POST /api/v1/plugin/access-audit/report?token=<server_token>&node_id=<id>
  * Body: {
  *   "events": [
- *     {"user_id": 123, "target": "example.com", "source_ip": "1.2.3.4", "matched": true},
+ *     {"user_id": 123, "target": "example.com", "target_ip": "93.184.216.34", "source_ip": "1.2.3.4", "matched": true},
  *     ...
  *   ]
  * }
@@ -49,6 +49,7 @@ class ReportController extends Controller
             'events' => 'required|array|min:1|max:' . self::MAX_EVENTS,
             'events.*.user_id' => 'required|integer|min:1',
             'events.*.target' => 'required|string|max:255',
+            'events.*.target_ip' => 'nullable|string|max:45',
             'events.*.source_ip' => 'nullable|string|max:45',
             'events.*.matched' => 'nullable|boolean',
         ]);
@@ -68,6 +69,7 @@ class ReportController extends Controller
                 'node_id' => $nodeId,
                 'user_id' => (int) $event['user_id'],
                 'target' => mb_substr((string) $event['target'], 0, 255),
+                'target_ip' => isset($event['target_ip']) ? mb_substr((string) $event['target_ip'], 0, 45) : null,
                 'source_ip' => isset($event['source_ip']) ? mb_substr((string) $event['source_ip'], 0, 45) : null,
                 'matched' => $hit ? 1 : 0,
                 'created_at' => $now,
@@ -123,6 +125,7 @@ class ReportController extends Controller
                 'rule_id' => $rule->id,
                 'node_id' => $nodeId,
                 'target' => mb_substr((string) $event['target'], 0, 255),
+                'target_ip' => isset($event['target_ip']) ? mb_substr((string) $event['target_ip'], 0, 45) : null,
                 'source_ip' => isset($event['source_ip']) ? mb_substr((string) $event['source_ip'], 0, 45) : null,
                 'banned' => 0,
                 'created_at' => $now,

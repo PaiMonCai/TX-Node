@@ -1,0 +1,72 @@
+name: Temporary target IP UI patch
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/audit-target-ip
+      - name: Add target IP columns and CSV export
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('panel-plugin/AccessAudit/resources/views/admin.blade.php')
+          data = p.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  '<th>时间</th><th>节点</th><th>用户</th><th>目标</th><th>来源 IP</th><th>状态</th>',
+                  '<th>时间</th><th>节点</th><th>用户</th><th>目标</th><th>目标 IP</th><th>来源 IP</th><th>状态</th>'
+              ),
+              (
+                  '<th>ID</th><th>用户</th><th>规则</th><th>目标</th><th>节点</th><th>来源 IP</th><th>触发封禁</th><th>时间</th>',
+                  '<th>ID</th><th>用户</th><th>规则</th><th>目标</th><th>目标 IP</th><th>节点</th><th>来源 IP</th><th>触发封禁</th><th>时间</th>'
+              ),
+              (
+                  '''      <td><span class="aa-target aa-mono" title="${esc(x.target)}">${esc(x.target)}</span></td>\n      <td class="aa-mono aa-nowrap">${esc(x.source_ip || '-')}</td>''',
+                  '''      <td><span class="aa-target aa-mono" title="${esc(x.target)}">${esc(x.target)}</span></td>\n      <td class="aa-mono aa-nowrap">${esc(x.target_ip || '-')}</td>\n      <td class="aa-mono aa-nowrap">${esc(x.source_ip || '-')}</td>'''
+              ),
+              (
+                  "|| '<tr><td colspan=\"6\" class=\"aa-empty\">暂无记录 —— 节点 config.yml 开启 <code>audit.report_all</code> 后才有全量数据</td></tr>';",
+                  "|| '<tr><td colspan=\"7\" class=\"aa-empty\">暂无记录 —— 节点 config.yml 开启 <code>audit.report_all</code> 后才有全量数据</td></tr>';"
+              ),
+              (
+                  "const head = ['时间', '节点', '节点ID', '用户', '目标', '来源IP', '是否命中'];",
+                  "const head = ['时间', '节点', '节点ID', '用户', '目标', '目标IP', '来源IP', '是否命中'];"
+              ),
+              (
+                  "const cells = [ts(x.created_at), x.node_name, x.node_id, x.user_email, x.target, x.source_ip || '', x.matched ? '命中' : '正常'];",
+                  "const cells = [ts(x.created_at), x.node_name, x.node_id, x.user_email, x.target, x.target_ip || '', x.source_ip || '', x.matched ? '命中' : '正常'];"
+              ),
+              (
+                  '''      <td><span class="aa-target aa-mono" title="${esc(x.target)}">${esc(x.target)}</span></td>\n      <td>${nodeCell(x.node_id, nodeName(x.node_id))}</td>''',
+                  '''      <td><span class="aa-target aa-mono" title="${esc(x.target)}">${esc(x.target)}</span></td>\n      <td class="aa-mono aa-nowrap">${esc(x.target_ip || '-')}</td>\n      <td>${nodeCell(x.node_id, nodeName(x.node_id))}</td>'''
+              ),
+              (
+                  "</tr>`).join('') || '<tr><td colspan=\"8\" class=\"aa-empty\">暂无记录</td></tr>';",
+                  "</tr>`).join('') || '<tr><td colspan=\"9\" class=\"aa-empty\">暂无记录</td></tr>';"
+              ),
+          ]
+
+          for old, new in replacements:
+              count = data.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one match, got {count}: {old[:80]!r}')
+              data = data.replace(old, new, 1)
+
+          p.write_text(data, encoding='utf-8')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add panel-plugin/AccessAudit/resources/views/admin.blade.php
+          git commit -m 'Show target IP in audit admin tables'
+          git push origin HEAD:fix/audit-target-ip

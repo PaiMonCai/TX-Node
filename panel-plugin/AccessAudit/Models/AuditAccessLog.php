@@ -17,6 +17,7 @@ class AuditAccessLog extends Model
         'node_id',
         'user_id',
         'target',
+        'target_ip',
         'source_ip',
         'matched',
         'created_at',

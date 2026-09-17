@@ -26,7 +26,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/PaiMonCai/TX-Node/main/deplo
 
 不带参数执行会进入**交互式运维面板**；带参数则非交互执行单个命令。
 
-脚本完成：Docker 环境检测/自动安装 → 交互式填写面板地址 / token / node_id（或 machine 模式 machine_id + 机器令牌）→ 生成 `/etc/xboard-node/config.yml` + `docker-compose.yml` → 拉镜像启动 → 部署后自检（容器存活 + 审计模块连通）。重复执行可升级/重配/卸载（幂等）。
+脚本完成：Docker 环境检测/自动安装 → 交互式填写面板地址 / token / node_id（或 machine 模式 machine_id + 机器令牌）→ 生成 `/etc/txnode/config.yml` + `docker-compose.yml` → 拉镜像启动 → 部署后自检（容器存活 + 审计模块连通）。重复执行可升级/重配/卸载（幂等）。
 
 > 首次使用前确认 GitHub Packages 里 `tx-node` 包的可见性为 **Public**
 > （Packages → tx-node → Package settings → Change visibility），
@@ -40,7 +40,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/PaiMonCai/TX-Node/main/deplo
 txnode
 ```
 
-面板会自动识别当前是 Docker 部署还是 systemd 部署（`install.sh` 装的），两种布局用同一套菜单：
+面板会自动识别当前的部署状态（txnode 的 Docker 部署 / `install.sh` 装的 systemd 部署 / 未部署），用同一套菜单：
 
 | 菜单 | 作用 |
 |---|---|
@@ -55,13 +55,54 @@ txnode
 | 9 备份 / 恢复 | 配置备份、回滚、清理旧备份 |
 | 10 卸载 | 移除容器 / 服务，**保留配置** |
 | 11 彻底清除 | 删容器、镜像、配置、systemd 单元（需手输 `PURGE` 确认） |
+| 12 从 install.sh 导入 | **仅检测到 `install.sh` 部署时出现**，见下 |
 
 几个概念上的区别，别用错：
 
 - **停止**：本次停掉，机器重启后仍会自启。
 - **暂停**：停止 **且** 取消开机自启（Docker 下会把 compose 的 `restart: always` 改成 `"no"`），适合长期下线。
-- **卸载**：去掉运行环境，配置留在 `/etc/xboard-node`，之后能重新装回来。
+- **卸载**：去掉运行环境，配置留在 `/etc/txnode`，之后能重新装回来。
 - **彻底清除**：连配置一起删，**不可逆**。
+
+### 从 `install.sh` 部署迁移（导入）
+
+`install.sh` 装的是 systemd + 非 Docker 布局（`/etc/xboard-node`），txnode 用的是 Docker 布局（`/etc/txnode`）。
+**两者目录与配置完全分离，可以并存**；也可以把 `install.sh` 的配置直接导入，转成 txnode 的 Docker 部署。
+
+进入面板时如果检测到 `install.sh` 部署而本机还没有 txnode，会**主动询问**是否导入；也可以随时手动触发：
+
+```bash
+bash deploy.sh migrate              # 导入（交互式）
+bash deploy.sh migrate --dry-run    # 只预览会生成什么，不写任何文件
+```
+
+导入过程分四步：
+
+1. **提取**：读 `install.sh` 的 `config.yml` + `credentials.env` + `install-meta.json`（**只读**，不改它任何文件）。
+   注意 `install.sh` 的密钥不落在 `config.yml` 里——它用 `token_env` 指向 `credentials.env` 中的变量名（由 systemd 注入），
+   所以导入时必须把 `token_env` **解析成真实 token**。
+2. **合并**：`install.sh` 是「多实例」结构（顶层 `instances:` 列表），txnode 是单份配置，按下面的规则智能归并。
+3. **启动**：写入 `/etc/txnode` 并拉起容器（端口错开，此时两套并存）。
+4. **收尾**：容器确认运行后，**停止并禁用** `xboard-node.service`，避免两套抢同一批节点。
+   `install.sh` 的配置**保留不删**，随时可回滚；确认稳定后按提示自行清理。
+
+**合并规则**（受限于 txnode 配置模型）：
+
+| `install.sh` 里的实例 | 转换结果 |
+|---|---|
+| 同一 `panel.url` 下的多个 node | `panel: {url, token}` + `nodes: [{node_id, node_type, kernel.config_dir}, ...]` |
+| 单个 node | `panel: {url, token, node_id, node_type}`（最贴近原语义） |
+| machine 实例 | `panel: {url}` + `machine: {machine_id, token}` |
+| 多个**不同** `panel.url` / machine | 单份配置无法表达 → **列出候选让你选一组**导入 |
+| 同 `panel.url` 但 **token 不一致** | 无法合并（txnode 多节点共享一个 token）→ 明确报错，不会静默丢节点 |
+
+几点值得提前知道的：
+
+- **`machine` 与 `nodes` 互斥**（Go 侧强校验），只能二选一。
+- **每个节点的 `kernel.config_dir` 会逐节点保留**——这些目录原本就是各自独立的，不保留会互相覆盖。
+- **token 解析不到**时会警告并列出缺失的变量名，可以继续（之后在「修改配置」里补）。
+- `install.sh` 三件套（配置 / 二进制 / systemd 单元）**只有部分存在**时会提示可能已被手工清理，需你确认后再继续。
+- `migrate --dry-run` 只打印将要生成的配置与合并结果，适合先看一眼再动手。
 
 ### 非交互命令
 
@@ -69,6 +110,8 @@ txnode
 
 ```bash
 bash deploy.sh install       # 安装 / 重新部署（交互式向导）
+bash deploy.sh migrate       # 从 install.sh 部署导入并转成 docker
+bash deploy.sh migrate --dry-run  # 只预览，不落盘
 bash deploy.sh upgrade       # 升级到最新镜像并重建
 bash deploy.sh status        # 查看状态与配置摘要
 bash deploy.sh start|stop|restart|pause
@@ -84,13 +127,13 @@ bash deploy.sh help          # 帮助
 
 ### 自定义安装路径
 
-默认装在 `/etc/xboard-node`。需要换位置（多实例 / 自定义布局）时用环境变量覆盖：
+默认装在 `/etc/txnode`（与 `install.sh` 的 `/etc/xboard-node` 分开，互不干扰）。需要换位置时用环境变量覆盖：
 
 ```bash
 INSTALL_DIR=/opt/tx-node bash deploy.sh install
 ```
 
-可用变量：`INSTALL_DIR`、`APP_NAME`、`IMAGE`、`CLI_LINK`。
+可用变量：`INSTALL_DIR`、`APP_NAME`、`IMAGE`、`CLI_LINK`，以及只读探测用的 `LEGACY_INSTALL_ROOT`（默认 `/etc/xboard-node`）。
 
 ### 配置校验（`validate`）
 
@@ -110,8 +153,8 @@ INSTALL_DIR=/opt/tx-node bash deploy.sh install
 **1. 准备配置文件**
 
 ```bash
-mkdir -p /etc/xboard-node
-cat > /etc/xboard-node/config.yml <<'EOF'
+mkdir -p /etc/txnode
+cat > /etc/txnode/config.yml <<'EOF'
 panel:
   url: "https://你的面板域名"
   token: "面板 server_token"
@@ -131,7 +174,7 @@ EOF
 ```bash
 docker run -d --restart=always --network=host \
   --name tx-node \
-  -v /etc/xboard-node/config.yml:/etc/xboard-node/config.yml \
+  -v /etc/txnode/config.yml:/etc/xboard-node/config.yml \
   ghcr.io/paimoncai/tx-node:latest
 ```
 

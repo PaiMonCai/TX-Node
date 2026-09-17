@@ -27,8 +27,10 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'
 BLUE='\033[0;34m'; MAGENTA='\033[0;35m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
 APP_NAME="${APP_NAME:-tx-node}"
-# 安装目录与关键路径允许用环境变量覆盖（便于自定义布局 / 多实例 / 测试）
-INSTALL_DIR="${INSTALL_DIR:-/etc/xboard-node}"
+# txnode 自己的安装目录，与 install.sh 的 /etc/xboard-node **完全分离**，
+# 两套部署可以并存、互不干扰（见 LEGACY_INSTALL_ROOT）。
+# 可用环境变量覆盖（自定义布局 / 多实例 / 测试）。
+INSTALL_DIR="${INSTALL_DIR:-/etc/txnode}"
 COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 CONFIG_FILE="$INSTALL_DIR/config.yml"
 BACKUP_DIR="$INSTALL_DIR/backups"
@@ -45,13 +47,18 @@ fi
 [ -z "$SELF_PATH" ] && SELF_PATH="$0"
 unset _self_dir
 
-# systemd 模式（install.sh 装的非 docker 部署）的探测路径
+# install.sh（systemd / 非 docker 部署）的布局。这些路径只用于**探测与导入**，
+# txnode 自己的文件一律不写进这里。
+LEGACY_INSTALL_ROOT="${LEGACY_INSTALL_ROOT:-/etc/xboard-node}"
+LEGACY_CONFIG_FILE="$LEGACY_INSTALL_ROOT/config.yml"
+LEGACY_CREDENTIALS_FILE="$LEGACY_INSTALL_ROOT/credentials.env"
+LEGACY_META_FILE="$LEGACY_INSTALL_ROOT/install-meta.json"
 SERVICE_NAME="xboard-node.service"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
 SB_BINARY="/usr/local/bin/xboard-node"
 XBCTL_PATH="/usr/local/bin/xbctl"
 
-# 运行模式：docker | systemd | none，由 detect_deploy_mode 填充
+# 运行模式：docker | legacy | none，由 detect_deploy_mode 填充
 DEPLOY_MODE=""
 
 # ════════════════════════════════════════════════════════════════════
@@ -101,22 +108,52 @@ docker_available() {
 }
 
 detect_deploy_mode() {
-  # docker 优先：compose 文件存在，或容器存在
+  # docker 优先：compose 文件存在，或容器存在（这是 txnode 自己的部署）
   if command -v docker >/dev/null 2>&1; then
     if [ -f "$COMPOSE_FILE" ] || docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$APP_NAME"; then
       DEPLOY_MODE="docker"
       return
     fi
   fi
-  # systemd 模式
-  if [ -f "$SERVICE_PATH" ] || [ -x "$SB_BINARY" ]; then
-    DEPLOY_MODE="systemd"
+  # legacy = install.sh 装的 systemd 非 docker 部署。
+  # 注意这不是"本脚本的部署"，只是**可以被导入**的来源（见 migrate 相关函数）。
+  if detect_legacy_install; then
+    DEPLOY_MODE="legacy"
     return
   fi
   DEPLOY_MODE="none"
 }
 
-is_installed() { [ "$DEPLOY_MODE" != "none" ]; }
+# 是否存在 install.sh 部署（systemd 单元 / 二进制 / 配置目录任一存在即算）
+detect_legacy_install() {
+  [ -f "$SERVICE_PATH" ] || [ -x "$SB_BINARY" ] || [ -f "$LEGACY_CONFIG_FILE" ]
+}
+
+# 是否是一个"完整"的 install.sh 部署（三件套齐全，可安全导入）
+# 只存在配置目录但没二进制/服务，通常是被手工清理过的残留，导入前要提醒用户。
+legacy_install_completeness() { # 输出 full | partial | none
+  local n=0
+  [ -f "$LEGACY_CONFIG_FILE" ] && n=$((n+1))
+  [ -x "$SB_BINARY" ] && n=$((n+1))
+  [ -f "$SERVICE_PATH" ] && n=$((n+1))
+  case "$n" in
+    0) echo "none" ;;
+    3) echo "full" ;;
+    *) echo "partial" ;;
+  esac
+}
+
+is_installed() { [ "$DEPLOY_MODE" = "docker" ]; }
+
+# txnode 未部署时的统一提示：若发现 install.sh 部署，引导用户去导入而不是干瞪眼。
+# 用法：legacy_hint_or_fail <动作名>
+legacy_hint_or_fail() {
+  local action="${1:-操作}"
+  if detect_legacy_install; then
+    fail "txnode 未部署，无法${action}。检测到 install.sh 部署 —— 请用「从 install.sh 导入」把它转成 docker 部署"
+  fi
+  fail "未检测到已部署的 txnode，请先安装"
+}
 
 # ════════════════════════════════════════════════════════════════════
 #  docker 侧封装
@@ -131,7 +168,8 @@ container_state() { # 输出 running | exited | created | absent
 }
 
 # ════════════════════════════════════════════════════════════════════
-#  systemd 侧封装
+#  install.sh（legacy systemd）侧封装
+#  仅用于查看来源部署的状态 / 停止它，txnode 不写这里的任何文件。
 # ════════════════════════════════════════════════════════════════════
 svc_state() { # 输出 active | inactive | failed | absent
   if [ ! -f "$SERVICE_PATH" ]; then echo "absent"; return; fi
@@ -152,7 +190,7 @@ svc_ctrl() { # svc_ctrl start|stop|restart|enable|disable
   esac
 }
 
-# 统一的日志查看（自动分派 docker / systemd）
+# 统一的日志查看（自动分派 docker / legacy systemd）
 show_logs() { # show_logs <tail行数|空=跟随>
   local n="${1:-}"
   # 自行探测：允许单独调用（例如 `deploy.sh logs` 已在 main 里探测，但函数内再保险一次）
@@ -166,7 +204,8 @@ show_logs() { # show_logs <tail行数|空=跟随>
         docker logs -f "$APP_NAME" 2>&1 || true
       fi
       ;;
-    systemd)
+    legacy)
+      hint "以下是 install.sh 部署（${SERVICE_NAME}）的日志"
       if [ -n "$n" ]; then
         journalctl -u "$SERVICE_NAME" -n "$n" --no-pager 2>&1 || true
       else
@@ -235,6 +274,640 @@ backup_config() {
   cp -a "$CONFIG_FILE" "$dest"
   chmod 600 "$dest" 2>/dev/null || true
   ok "旧配置已备份 → $dest"
+}
+
+# ════════════════════════════════════════════════════════════════════
+#  install.sh 部署的读取与解析（只读，绝不写入 LEGACY_INSTALL_ROOT）
+#
+#  install.sh 的 config.yml 是**多实例**结构：
+#      instances:
+#        - id: node-8f3a1c2e
+#          panel:   { url, node_id, node_type, token_env }
+#          machine: { machine_id, token_env }
+#          kernel:  { type, config_dir }
+#          health_port: 65530
+#  密钥不落盘在 config.yml 里，而是 token_env 指向 credentials.env 中的变量名
+#  （形如 INSTANCE_NODE_8F3A1C2E_API_KEY / ..._MACHINE_TOKEN），
+#  由 systemd 的 EnvironmentFile 注入。所以导入时必须把 token_env 解析成真实值。
+# ════════════════════════════════════════════════════════════════════
+
+# 从 install-meta.json 取一个简单 key 的值（无 jq / python 依赖）
+_meta_get() {
+  local key="$1"
+  [ -f "$LEGACY_META_FILE" ] || return 1
+  local val
+  val=$(sed -n "s/.*\"${key}\": *\"\{0,1\}\([^\"]*\)\"\{0,1\}.*/\1/p" "$LEGACY_META_FILE" 2>/dev/null | head -1 | tr -d '\r')
+  val="${val%,}"
+  [ -n "$val" ] && echo "$val"
+}
+
+# 从 credentials.env（KEY=VALUE / export KEY=VALUE）取一个变量的值
+_cred_get() {
+  local key="$1"
+  [ -f "$LEGACY_CREDENTIALS_FILE" ] || return 1
+  [ -n "$key" ] || return 1
+  local val
+  val=$(sed -n "s/^[[:space:]]*\(export[[:space:]]\+\)\{0,1\}${key}[[:space:]]*=[[:space:]]*//p" \
+        "$LEGACY_CREDENTIALS_FILE" 2>/dev/null | head -1 | tr -d '\r')
+  # 去成对的引号
+  val="${val%\"}"; val="${val#\"}"
+  val="${val%\'}"; val="${val#\'}"
+  [ -n "$val" ] && echo "$val"
+}
+
+# 读取 install.sh config.yml 里的实例列表。
+# 输出：每行一个实例，字段以 \x1f (US) 分隔，便于在 shell 里安全切分：
+#   idx|id|mode|panel_url|node_id|machine_id|node_type|kernel|health_port|token_env|config_dir
+# mode = node | machine
+legacy_list_instances() {
+  [ -f "$LEGACY_CONFIG_FILE" ] || return 1
+  awk '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    function unq(s)  { gsub(/^["'"'"']|["'"'"']$/, "", s); return s }
+    function out() {
+      if (idx == 0) return
+      printf "%d\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n", \
+        idx, id, mode, url, nid, mid, ntype, kern, hp, tenv, cdir
+    }
+
+    BEGIN { idx = 0; inf = 0; inpan = 0; inmac = 0; inker = 0 }
+
+    /^[^[:space:]#]/ {
+      # 顶层键：离开 instances 段
+      if ($0 !~ /^instances[[:space:]]*:/) { inf = 0 }
+    }
+
+    /^instances[[:space:]]*:/ { inf = 1; next }
+    !inf { next }
+
+    # 新实例起始：  - id: xxx   或   - panel:
+    /^[[:space:]]*-[[:space:]]*/ {
+      out()
+      idx++
+      id=""; mode="node"; url=""; nid=""; mid=""; ntype=""; kern=""; hp=""; tenv=""; cdir=""
+      inpan=0; inmac=0; inker=0
+      rest = $0
+      sub(/^[[:space:]]*-[[:space:]]*/, "", rest)
+      if (rest ~ /^id[[:space:]]*:/) {
+        sub(/^id[[:space:]]*:[[:space:]]*/, "", rest); id = unq(trim(rest))
+      }
+      if (rest ~ /^panel[[:space:]]*:/)   inpan = 1
+      if (rest ~ /^machine[[:space:]]*:/) { inmac = 1; mode = "machine" }
+      if (rest ~ /^kernel[[:space:]]*:/)  inker = 1
+      next
+    }
+
+    # 子段切换（同一实例内）
+    /^[[:space:]]+panel[[:space:]]*:/   { inpan=1; inmac=0; inker=0; next }
+    /^[[:space:]]+machine[[:space:]]*:/ { inmac=1; inpan=0; inker=0; mode="machine"; next }
+    /^[[:space:]]+kernel[[:space:]]*:/  { inker=1; inpan=0; inmac=0; next }
+    /^[[:space:]]+(node|log|ws|runtime|cert|standalone|audit|nodes)[[:space:]]*:/ {
+      inpan=0; inmac=0; inker=0; next
+    }
+
+    # 键值
+    {
+      line = $0
+      key = line; sub(/[[:space:]]*:.*$/, "", key); key = trim(key)
+      val = line; sub(/^[^:]*:[[:space:]]*/, "", val)
+      sub(/[[:space:]]*#.*$/, "", val); val = unq(trim(val))
+      if (key == "") next
+      if (inpan) {
+        if (key=="url")        url = val
+        else if (key=="node_id")    nid = val
+        else if (key=="node_type")  ntype = val
+        else if (key=="token_env")  tenv = val
+      } else if (inmac) {
+        if (key=="machine_id")      mid = val
+        else if (key=="token_env")  tenv = val
+      } else if (inker) {
+        if (key=="type")       kern = val
+        else if (key=="config_dir") cdir = val
+      } else if (key=="health_port") {
+        hp = val
+      }
+    }
+
+    END { out() }
+  ' "$LEGACY_CONFIG_FILE"
+}
+
+# 把一行实例记录拆到全局变量，供调用方使用
+# 用法: legacy_parse_row "$row"; 之后读 LEG_* 变量
+legacy_parse_row() {
+  local row="$1"
+  LEG_IDX=""; LEG_ID=""; LEG_MODE=""; LEG_URL=""; LEG_NID=""; LEG_MID=""
+  LEG_NTYPE=""; LEG_KERN=""; LEG_HP=""; LEG_TENV=""; LEG_CDIR=""
+  IFS=$'\037' read -r LEG_IDX LEG_ID LEG_MODE LEG_URL LEG_NID LEG_MID \
+                     LEG_NTYPE LEG_KERN LEG_HP LEG_TENV LEG_CDIR <<EOF
+$row
+EOF
+  LEG_KERN="${LEG_KERN:-singbox}"
+}
+
+# 解析某实例的真实 token：优先 token_env → credentials.env，退化到同名 env
+legacy_resolve_token() { # legacy_resolve_token <token_env> [direct_token]
+  local tenv="$1" direct="${2:-}"
+  if [ -n "$direct" ]; then echo "$direct"; return 0; fi
+  [ -n "$tenv" ] || return 1
+  local v
+  v=$(_cred_get "$tenv" || true)
+  if [ -z "$v" ]; then
+    # 退化：可能已经 export 在环境里
+    eval "v=\${$tenv:-}"
+  fi
+  [ -n "$v" ] && echo "$v"
+}
+
+# 汇总：打印 install.sh 部署的概览（供菜单/交互确认用）
+legacy_summary() {
+  local rows; rows=$(legacy_list_instances || true)
+  if [ -z "$rows" ]; then
+    warn "未能从 $LEGACY_CONFIG_FILE 解析出任何实例"
+    [ -f "$LEGACY_CONFIG_FILE" ] || hint "config.yml 不存在"
+    return 1
+  fi
+  local n=0
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    n=$((n+1))
+    legacy_parse_row "$row"
+    local label="node_id=${LEG_NID}"
+    [ "$LEG_MODE" = "machine" ] && label="machine_id=${LEG_MID}"
+    local tok_state="${RED}缺失${NC}"
+    if legacy_resolve_token "$LEG_TENV" >/dev/null 2>&1; then tok_state="${GREEN}已解析${NC}"; fi
+    echo -e "   ${BOLD}${n})${NC} ${LEG_ID:-<无 id>}  ${DIM}${LEG_MODE}${NC}  ${LEG_URL}  ${label}  kernel=${LEG_KERN}  token:${tok_state}"
+    [ -n "$LEG_CDIR" ] && hint "config_dir: $LEG_CDIR"
+  done <<EOF
+$rows
+EOF
+  echo
+  echo -e "   ${DIM}共 $n 个实例${NC}"
+  return 0
+}
+
+# ════════════════════════════════════════════════════════════════════
+#  install.sh → docker 的配置合并
+#
+#  目标：把 install.sh 的「instances 列表」映射成 txnode 的单份 config.yml。
+#  映射规则（受限于 txnode 配置模型的表达能力）：
+#
+#    同一 panel.url 下的多个 node 实例
+#        → panel: { url, token }  +  nodes: [ {node_id, node_type, kernel...}, ... ]
+#        注意 txnode 多节点模式**所有节点共享同一个 panel.token**。
+#        若这些实例的 token 实际不同，说明它们分属不同面板凭据，无法合并，
+#        必须让用户挑一个（否则会静默丢掉一部分节点）。
+#
+#    machine 实例
+#        → panel: { url } + machine: { machine_id, token }
+#        machine 与 nodes **互斥**（Go 侧 validate 强制），二选一。
+#
+#    多个不同 panel.url / 不同 machine_id
+#        → 单份 config.yml 无法表达 → 列出候选让用户选一个导入。
+#
+#  提取阶段只往内存里填 MIG_* 变量，确认后才落盘，失败可原地回滚。
+# ════════════════════════════════════════════════════════════════════
+
+# 收集候选：把 legacy 实例按「可合并组」归并
+# 输出：每行一个候选组，"kind|key|label|count"，kind = node | machine
+mig_collect_candidates() {
+  local rows; rows=$(legacy_list_instances || true)
+  [ -n "$rows" ] || return 1
+
+  # 用关联数组把 node 按 "url" 分组、machine 按 "url|machine_id" 分组
+  declare -A g_count=() g_label=() g_token=() g_token_mix=()
+  local order=()
+  local row
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    legacy_parse_row "$row"
+    [ -n "$LEG_URL" ] || continue
+    local tok; tok=$(legacy_resolve_token "$LEG_TENV" || true)
+    if [ "$LEG_MODE" = "machine" ]; then
+      local k="machine|${LEG_URL}|${LEG_MID}"
+      if [ -z "${g_count[$k]:-}" ]; then
+        order+=("$k"); g_label[$k]="${LEG_URL} · machine_id=${LEG_MID}"; g_token[$k]="$tok"
+      fi
+      g_count[$k]=$(( ${g_count[$k]:-0} + 1 ))
+    else
+      local k="node|${LEG_URL}|"
+      if [ -z "${g_count[$k]:-}" ]; then
+        order+=("$k"); g_label[$k]="${LEG_URL}"; g_token[$k]="$tok"
+      elif [ -n "$tok" ] && [ -n "${g_token[$k]:-}" ] && [ "$tok" != "${g_token[$k]}" ]; then
+        # 同 URL 但 token 不同 → 标记为不可合并
+        g_token_mix[$k]=1
+      fi
+      g_count[$k]=$(( ${g_count[$k]:-0} + 1 ))
+    fi
+  done <<EOF
+$rows
+EOF
+
+  local k
+  for k in ${order[@]+"${order[@]}"}; do
+    local kind="${k%%|*}"
+    # mix 是独立字段，不要粘在 count 上（否则消费方按字段切分会读错 count）
+    local mix=""; [ -n "${g_token_mix[$k]:-}" ] && mix="MIX"
+    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
+      "$kind" "$k" "${g_label[$k]}" "${g_count[$k]}" "$mix"
+  done
+}
+
+# 载入一个候选组的实例明细到 MIG_ITEMS 数组（每项为原始 row）
+# 用法: mig_load_group <key>
+mig_load_group() {
+  local want="$1"
+  MIG_ITEMS=()
+  local rows; rows=$(legacy_list_instances || true)
+  local row
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    legacy_parse_row "$row"
+    [ -n "$LEG_URL" ] || continue
+    local k
+    if [ "$LEG_MODE" = "machine" ]; then
+      k="machine|${LEG_URL}|${LEG_MID}"
+    else
+      k="node|${LEG_URL}|"
+    fi
+    [ "$k" = "$want" ] && MIG_ITEMS+=("$row")
+  done <<EOF
+$rows
+EOF
+  [ ${#MIG_ITEMS[@]} -gt 0 ]
+}
+
+# 交互式选组：把候选列出来让用户挑一个
+# 用法: mig_pick_group <变量名>   → 选中后把 key 写入该变量
+mig_pick_group() {
+  local __out="$1"
+  local cands; cands=$(mig_collect_candidates || true)
+  if [ -z "$cands" ]; then
+    fail "未能从 install.sh 配置解析出任何可用实例，无法导入"
+  fi
+
+  local items=()
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    items+=("$line")
+  done <<EOF
+$cands
+EOF
+
+  local n=${#items[@]}
+  title "install.sh 部署中可导入的配置"
+  echo
+  local i=0
+  while [ "$i" -lt "$n" ]; do
+    local it="${items[$i]}"
+    local kind key label count mix
+    IFS=$'\037' read -r kind key label count mix <<EOF
+$it
+EOF
+    local kind_txt="节点"
+    [ "$kind" = "machine" ] && kind_txt="机器"
+    local warn_txt=""
+    [ "${mix:-}" = "MIX" ] && warn_txt="  ${RED}⚠ 组内 token 不一致，无法合并${NC}"
+    echo -e "   ${BOLD}$((i+1))${NC}) [${kind_txt}] ${label}  ${DIM}${count} 个实例${NC}${warn_txt}"
+    i=$((i+1))
+  done
+  echo
+  echo -e "   ${DIM}注：单份 config.yml 只能承载一组（多节点要求同一面板同一 token；机器与节点模式互斥）${NC}"
+  echo
+
+  if [ "$n" -eq 1 ]; then
+    # 只有一个候选，直接确认
+    local only="${items[0]}"
+    local kind key label count mix
+    IFS=$'\037' read -r kind key label count mix <<EOF
+$only
+EOF
+    if [ "${mix:-}" = "MIX" ]; then
+      fail "唯一的候选组内部 token 不一致，无法自动合并。请先在 install.sh 部署里统一 token，或手工迁移"
+    fi
+    if ! confirm "只有一组可导入（$label），用它转换？" "Y"; then
+      info "已取消"
+      return 1
+    fi
+    printf -v "$__out" '%s' "$key"
+    return 0
+  fi
+
+  local sel
+  read -r -p "  请选择要导入的一组 [1-$n] (0=取消): " sel || fail "输入中断，已取消"
+  sel="${sel//[[:space:]]/}"
+  [ "$sel" = "0" ] && { info "已取消"; return 1; }
+  [[ "$sel" =~ ^[0-9]+$ ]] || fail "请输入数字"
+  [ "$sel" -ge 1 ] && [ "$sel" -le "$n" ] || fail "序号超出范围"
+
+  local picked="${items[$((sel-1))]}"
+  local pkind pkey plabel pcount pmix
+  IFS=$'\037' read -r pkind pkey plabel pcount pmix <<EOF
+$picked
+EOF
+  if [ "${pmix:-}" = "MIX" ]; then
+    fail "该组内部 token 不一致，无法自动合并。请先在 install.sh 部署里统一 token，或手工迁移"
+  fi
+  printf -v "$__out" '%s' "$pkey"
+  return 0
+}
+
+# 把一个候选组的实例明细转成 txnode 的配置片段（填 MIG_* 变量）
+# 用法: mig_build_group <key>
+# 产出: MIG_MODE(node|machine) MIG_URL MIG_TOKEN MIG_MACHINE_ID
+#       MIG_NODES (每个 \n 一项: node_id|node_type|kernel|config_dir)
+#       MIG_KERNEL MIG_HEALTH_PORT MIG_LOG_LEVEL MIG_HAS_KCDIR
+mig_build_group() {
+  local key="$1"
+  mig_load_group "$key" || fail "读取候选组失败"
+
+  MIG_MODE=""; MIG_URL=""; MIG_TOKEN=""; MIG_MACHINE_ID=""
+  MIG_NODES=""; MIG_KERNEL=""; MIG_HEALTH_PORT=""; MIG_LOG_LEVEL=""
+  MIG_HAS_KCDIR="false"
+  MIG_MISSING_TOKEN=""
+
+  local row
+  for row in ${MIG_ITEMS[@]+"${MIG_ITEMS[@]}"}; do
+    legacy_parse_row "$row"
+    [ -n "$MIG_URL" ] || MIG_URL="$LEG_URL"
+
+    local tok; tok=$(legacy_resolve_token "$LEG_TENV" || true)
+
+    if [ "$LEG_MODE" = "machine" ]; then
+      MIG_MODE="machine"
+      MIG_MACHINE_ID="$LEG_MID"
+      MIG_TOKEN="$tok"
+      [ -n "$LEG_KERN" ] && MIG_KERNEL="$LEG_KERN"
+      [ -n "$LEG_HP" ] && MIG_HEALTH_PORT="$LEG_HP"
+      [ -z "$tok" ] && MIG_MISSING_TOKEN="${LEG_TENV:-<无 token_env>}"
+    else
+      [ -n "$MIG_MODE" ] || MIG_MODE="node"
+      [ -z "$MIG_TOKEN" ] && MIG_TOKEN="$tok"
+      [ -z "$tok" ] && MIG_MISSING_TOKEN="${LEG_TENV:-<无 token_env>}"
+      # 全局 kernel 取第一个非空值；逐个实例的差异走 per-node kernel 覆盖
+      [ -z "$MIG_KERNEL" ] && [ -n "$LEG_KERN" ] && MIG_KERNEL="$LEG_KERN"
+      [ -z "$MIG_HEALTH_PORT" ] && [ -n "$LEG_HP" ] && MIG_HEALTH_PORT="$LEG_HP"
+      MIG_NODES="${MIG_NODES}${LEG_NID}|${LEG_NTYPE}|${LEG_KERN}|${LEG_CDIR}|${LEG_HP}
+"
+      [ -n "$LEG_CDIR" ] && MIG_HAS_KCDIR="true"
+    fi
+  done
+
+  MIG_KERNEL="${MIG_KERNEL:-singbox}"
+  MIG_LOG_LEVEL="${MIG_LOG_LEVEL:-info}"
+
+  # 校验：机器模式必须有 machine_id + token；节点模式必须有 node_id
+  if [ "$MIG_MODE" = "machine" ]; then
+    [[ "$MIG_MACHINE_ID" =~ ^[0-9]+$ ]] && [ "$MIG_MACHINE_ID" -gt 0 ] \
+      || fail "machine_id 无效（$MIG_MACHINE_ID），无法导入"
+  else
+    # 逐个检查 node_id
+    local entry
+    while IFS='|' read -r nid ntype nkern ncdir nhp; do
+      [ -n "$nid" ] || continue
+      [[ "$nid" =~ ^[0-9]+$ ]] && [ "$nid" -gt 0 ] \
+        || fail "解析到无效的 node_id（$nid），无法导入"
+    done <<EOF
+$MIG_NODES
+EOF
+  fi
+  return 0
+}
+
+# 渲染 config.yml（迁移用；与 write_config_files 同格式，但支持 nodes 列表）
+mig_render_config() {
+  local out="$1"
+  {
+    echo "# Generated by tx-node deploy.sh ($(date '+%Y-%m-%d %H:%M:%S'))"
+    echo "# 由 install.sh 部署转换而来 —— 源: $LEGACY_CONFIG_FILE"
+    echo "panel:"
+    echo "  url: \"$MIG_URL\""
+    if [ "$MIG_MODE" = "machine" ]; then
+      echo "machine:"
+      echo "  machine_id: $MIG_MACHINE_ID"
+      echo "  token: \"$MIG_TOKEN\""
+    else
+      echo "  token: \"$MIG_TOKEN\""
+      if [ "${MIG_NODES_COUNT:-0}" -le 1 ]; then
+        # 单节点：用 panel.node_id 形式，最贴近 install.sh 的原始语义
+        local nid ntype
+        nid=$(printf '%s' "$MIG_NODES" | awk -F'|' 'NF{print $1; exit}')
+        ntype=$(printf '%s' "$MIG_NODES" | awk -F'|' 'NF{print $2; exit}')
+        echo "  node_id: $nid"
+        [ -n "$ntype" ] && echo "  node_type: \"$ntype\""
+      else
+        # 多节点：nodes 列表。node_type 逐节点写（允许各节点不同）。
+        echo "nodes:"
+        local entry
+        while IFS='|' read -r nid ntype nkern ncdir nhp; do
+          [ -n "$nid" ] || continue
+          echo "  - node_id: $nid"
+          [ -n "$ntype" ] && echo "    node_type: \"$ntype\""
+          # config_dir 逐节点写：各实例原本就是独立目录，必须保留以免相互覆盖
+          if [ -n "$ncdir" ]; then
+            echo "    kernel:"
+            echo "      config_dir: \"$ncdir\""
+          fi
+        done <<EOF
+$MIG_NODES
+EOF
+      fi
+    fi
+    echo
+    echo "kernel:"
+    echo "  type: \"$MIG_KERNEL\""
+    if [ "$MIG_MODE" != "machine" ] && [ "$MIG_NODES_COUNT" = "1" ] && [ "$MIG_HAS_KCDIR" = "true" ]; then
+      local ncdir
+      ncdir=$(printf '%s' "$MIG_NODES" | awk -F'|' 'NF{print $4; exit}')
+      [ -n "$ncdir" ] && echo "  config_dir: \"$ncdir\""
+    fi
+    echo
+    echo "log:"
+    echo "  level: \"$MIG_LOG_LEVEL\""
+    echo
+    echo "# tx-node 访问审计（sing-box 内核）。删除本段或 enabled: false 即关闭。"
+    echo "audit:"
+    echo "  enabled: false"
+    echo "  report_all: false"
+  } > "$out"
+}
+
+# 整合入口：迁移确认后写盘 + 启动。dry_run=1 时只打印不落盘
+# 用法: mig_write_and_start <group_key> [dry_run]
+mig_write_and_start() {
+  local key="$1" dry="${2:-0}"
+  mig_build_group "$key"
+
+  # 统计节点数
+  MIG_NODES_COUNT=0
+  if [ -n "$(printf '%s' "$MIG_NODES" | tr -d '\n')" ]; then
+    MIG_NODES_COUNT=$(printf '%s' "$MIG_NODES" | sed '/^$/d' | wc -l | tr -d ' ')
+  fi
+
+  echo
+  title "将生成的 txnode 配置"
+  echo
+  echo -e "   ${DIM}模式${NC}    : $MIG_MODE"
+  echo -e "   ${DIM}面板${NC}    : $MIG_URL"
+  if [ "$MIG_MODE" = "machine" ]; then
+    echo -e "   ${DIM}machine${NC} : id=$MIG_MACHINE_ID  token=$(_mask "$MIG_TOKEN")"
+  else
+    echo -e "   ${DIM}token${NC}   : $(_mask "$MIG_TOKEN")"
+    echo -e "   ${DIM}节点${NC}    : $MIG_NODES_COUNT 个"
+    local entry
+    while IFS='|' read -r nid ntype nkern ncdir nhp; do
+      [ -n "$nid" ] || continue
+      echo -e "             - node_id=$nid${ntype:+  type=$ntype}${ncdir:+  ${DIM}dir=$ncdir${NC}}"
+    done <<EOF
+$MIG_NODES
+EOF
+  fi
+  echo -e "   ${DIM}内核${NC}    : $MIG_KERNEL"
+  echo -e "   ${DIM}安装目录${NC}: $INSTALL_DIR  ${DIM}（install.sh 的 $LEGACY_INSTALL_ROOT 不受影响）${NC}"
+
+  if [ -n "$MIG_MISSING_TOKEN" ]; then
+    echo
+    warn "有实例的 token 未解析成功：$MIG_MISSING_TOKEN"
+    hint "该实例可能无法正常连接面板。可继续，但建议稍后在「修改配置」里补上。"
+  fi
+
+  if [ "$dry" = "1" ]; then
+    echo
+    hint "[dry-run] 预览结束，未写入任何文件"
+    return 0
+  fi
+
+  echo
+  echo -e "${BOLD}即将执行：${NC}"
+  echo "   1) 写入 $CONFIG_FILE 与 $COMPOSE_FILE"
+  echo "   2) 拉取镜像并启动 txnode 容器（端口错开，可与 install.sh 并存）"
+  echo "   3) 启动成功后停止 install.sh 服务，并备份其配置到 txnode 备份目录"
+  if ! confirm "确认转换？" "Y"; then
+    info "已取消，未做任何改动"
+    return 1
+  fi
+
+  mkdir -p "$INSTALL_DIR" "$BACKUP_DIR"
+  # 源配置快照：即使后面失败，也能从这里回滚
+  local src_backup="$BACKUP_DIR/legacy-source.$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$src_backup"
+  local f
+  for f in "$LEGACY_CONFIG_FILE" "$LEGACY_CREDENTIALS_FILE" "$LEGACY_META_FILE"; do
+    [ -f "$f" ] && cp -a "$f" "$src_backup/" 2>/dev/null || true
+  done
+  ok "源配置已快照 → $src_backup"
+
+  local tmp_cfg="$INSTALL_DIR/.config.yml.migrating"
+  mig_render_config "$tmp_cfg"
+  chmod 600 "$tmp_cfg"
+  mv -f "$tmp_cfg" "$CONFIG_FILE"
+  ok "配置已写入 $CONFIG_FILE"
+
+  cat > "$COMPOSE_FILE" <<EOF
+services:
+  tx-node:
+    image: $IMAGE
+    container_name: $APP_NAME
+    restart: always
+    network_mode: host
+    volumes:
+      - $CONFIG_FILE:/etc/xboard-node/config.yml:ro
+EOF
+  ok "compose 文件已写入 $COMPOSE_FILE"
+
+  info "拉取镜像..."
+  if ! dc pull; then
+    warn "镜像拉取失败，已保留写入的配置，可在面板里重试「升级」"
+    return 1
+  fi
+
+  info "启动 txnode..."
+  if ! dc up -d; then
+    fail "启动失败，配置已保留。排查：txnode logs"
+  fi
+
+  sleep 5
+  if ! docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -q "$APP_NAME.*Up"; then
+    warn "容器未正常运行，最近日志："
+    show_logs 20
+    warn "配置已保留，未动 install.sh 侧。排查后可重试。"
+    return 1
+  fi
+  ok "txnode 容器运行中"
+
+  install_cli_link
+  mig_stop_legacy
+  return 0
+}
+
+# 转换成功后：停掉 install.sh 服务（配置已在快照里，可回滚）
+# 默认保留其配置，不删除 —— 用户确认「先停服务，备份后清除」
+mig_stop_legacy() {
+  echo
+  title "处理 install.sh 侧"
+  local sst; sst=$(svc_state)
+  if [ "$sst" = "absent" ]; then
+    hint "未发现 systemd 服务，跳过停止"
+  else
+    info "停止并禁用 ${SERVICE_NAME}（防止它与 txnode 抢同一批节点）"
+    systemctl stop "$SERVICE_NAME" 2>/dev/null || warn "停止失败，请手动检查"
+    systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+    ok "${SERVICE_NAME} 已停止并取消开机自启"
+  fi
+
+  echo
+  hint "install.sh 的配置（$LEGACY_INSTALL_ROOT）**保留未删**，以便随时回滚。"
+  hint "确认 txnode 稳定运行后，可执行: rm -rf $LEGACY_INSTALL_ROOT $SERVICE_PATH $SB_BINARY $XBCTL_PATH"
+  echo -e "   ${DIM}或稍后用本脚本的「清理 install.sh 残留」完成。${NC}"
+}
+
+# 遮蔽 token 用于展示
+_mask() {
+  local v="$1"
+  if [ -z "$v" ]; then echo "${RED}（空）${NC}"; return; fi
+  local n=${#v}
+  if [ "$n" -le 8 ]; then echo "****"; else echo "${v:0:4}****${v: -4}"; fi
+}
+
+# 完整迁移流程（面板 / CLI 共用）
+# 用法: do_migrate_legacy [dry_run]
+do_migrate_legacy() {
+  local dry="${1:-0}"
+
+  if ! detect_legacy_install; then
+    if [ "$dry" = "1" ]; then
+      fail "未检测到 install.sh 部署，无需导入"
+    fi
+    hint "未检测到 install.sh 部署（$LEGACY_INSTALL_ROOT / $SERVICE_NAME）"
+    return 1
+  fi
+
+  local complete; complete=$(legacy_install_completeness)
+  case "$complete" in
+    partial)
+      warn "install.sh 部署看起来**不完整**（配置 / 二进制 / systemd 单元只有部分存在）"
+      hint "可能已被手工清理过。仍可尝试导入配置，但请自行确认解析结果正确。"
+      confirm "继续尝试导入？" "n" || { info "已取消"; return 1; }
+      ;;
+    none)
+      fail "既没有 config.yml，也没有服务或二进制，无法导入"
+      ;;
+  esac
+
+  if [ ! -f "$LEGACY_CONFIG_FILE" ]; then
+    fail "找不到 install.sh 的配置文件 $LEGACY_CONFIG_FILE，无法提取配置"
+  fi
+
+  echo
+  title "install.sh 部署概览"
+  echo
+  legacy_summary || fail "解析失败"
+  echo
+
+  local key
+  mig_pick_group key || return 1
+  mig_write_and_start "$key" "$dry"
 }
 
 ensure_docker() {
@@ -462,7 +1135,7 @@ do_status() {
       ver=$(docker exec "$APP_NAME" /usr/local/bin/xboard-node -v 2>/dev/null || echo "unknown")
       echo "  版本:     $ver"
       ;;
-    systemd)
+    legacy)
       local sst; sst=$(svc_state)
       local sst_c
       case "$sst" in
@@ -471,13 +1144,14 @@ do_status() {
         inactive) sst_c="${YELLOW}已停止${NC}" ;;
         *)        sst_c="${YELLOW}${sst}${NC}" ;;
       esac
-      echo -e "  服务状态: ${sst_c}"
+      echo -e "  服务状态: ${sst_c} ${DIM}(install.sh 部署，未转换为 docker)${NC}"
       local sver="unknown"
       if [ -x "$SB_BINARY" ]; then
         sver=$("$SB_BINARY" -v 2>/dev/null || echo "unknown")
       fi
       echo "  二进制:   $SB_BINARY"
       echo "  版本:     $sver"
+      hint "txnode 尚未部署；可用菜单「从 install.sh 导入」把它转成 docker 部署"
       ;;
   esac
 
@@ -542,38 +1216,29 @@ do_status() {
 # ════════════════════════════════════════════════════════════════════
 do_start() {
   detect_deploy_mode
-  ! is_installed && fail "未检测到已部署的 tx-node"
+  ! is_installed && legacy_hint_or_fail "启动"
   info "启动..."
-  case "$DEPLOY_MODE" in
-    docker)  dc up -d ;;
-    systemd) svc_ctrl start ;;
-  esac
+  dc up -d
   sleep 3
   ok "已启动"; do_status
 }
 
 do_stop() {
   detect_deploy_mode
-  ! is_installed && fail "未检测到已部署的 tx-node"
+  ! is_installed && legacy_hint_or_fail "停止"
   if ! confirm "确认停止 tx-node？（节点将下线，面板会显示离线）" "n"; then
     info "已取消"; return 0
   fi
   info "停止..."
-  case "$DEPLOY_MODE" in
-    docker)  dc stop ;;
-    systemd) svc_ctrl stop ;;
-  esac
+  dc stop
   ok "已停止"
 }
 
 do_restart() {
   detect_deploy_mode
-  ! is_installed && fail "未检测到已部署的 tx-node"
+  ! is_installed && legacy_hint_or_fail "重启"
   info "重启..."
-  case "$DEPLOY_MODE" in
-    docker)  dc restart ;;
-    systemd) svc_ctrl restart ;;
-  esac
+  dc restart
   sleep 3
   ok "已重启"; do_status
 }
@@ -581,31 +1246,22 @@ do_restart() {
 # 暂停 = 停止 + 禁止开机自启（区别于单纯停止）
 do_pause() {
   detect_deploy_mode
-  ! is_installed && fail "未检测到已部署的 tx-node"
+  ! is_installed && legacy_hint_or_fail "暂停"
   echo
   info "「暂停」= 停止服务 且 取消开机自启"
   hint "「停止」只是本次停掉，重启机器后仍会自动拉起。"
   if ! confirm "确认暂停 tx-node？" "n"; then
     info "已取消"; return 0
   fi
-  case "$DEPLOY_MODE" in
-    docker)
-      dc stop
-      # compose 里 restart: always 会让 docker 恢复时自动启动；改文件最稳妥。
-      # 要同时兼容 restart: always / "always" / 'always' 三种写法。
-      if grep -qE 'restart:[[:space:]]*["'"'"']?always["'"'"']?' "$COMPOSE_FILE" 2>/dev/null; then
-        sed -i -E 's/restart:[[:space:]]*["'"'"']?always["'"'"']?/restart: "no"/' "$COMPOSE_FILE"
-        ok "已将 compose 的 restart 策略改为 \"no\"（随系统自动启动已关闭）"
-      else
-        hint "compose 里未发现 restart: always，跳过自启策略改写"
-      fi
-      ;;
-    systemd)
-      svc_ctrl stop
-      svc_ctrl disable
-      ok "服务已停止并取消开机自启"
-      ;;
-  esac
+  dc stop
+  # compose 里 restart: always 会让 docker 恢复时自动启动；改文件最稳妥。
+  # 要同时兼容 restart: always / "always" / 'always' 三种写法。
+  if grep -qE 'restart:[[:space:]]*["'"'"']?always["'"'"']?' "$COMPOSE_FILE" 2>/dev/null; then
+    sed -i -E 's/restart:[[:space:]]*["'"'"']?always["'"'"']?/restart: "no"/' "$COMPOSE_FILE"
+    ok "已将 compose 的 restart 策略改为 \"no\"（随系统自动启动已关闭）"
+  else
+    hint "compose 里未发现 restart: always，跳过自启策略改写"
+  fi
   ok "已暂停"
   hint "恢复请用菜单里的「启动」（会自动恢复自启策略）"
 }
@@ -614,18 +1270,12 @@ do_pause() {
 restore_autostart() {
   # 自行探测：不依赖调用方是否已经填过 DEPLOY_MODE
   detect_deploy_mode
-  case "$DEPLOY_MODE" in
-    docker)
-      if grep -qE 'restart:[[:space:]]*["'"'"']?no["'"'"']?' "$COMPOSE_FILE" 2>/dev/null; then
-        sed -i -E 's/restart:[[:space:]]*["'"'"']?no["'"'"']?/restart: always/' "$COMPOSE_FILE"
-        info "已恢复 compose 的 restart: always"
-        dc up -d >/dev/null 2>&1 || true
-      fi
-      ;;
-    systemd)
-      svc_ctrl enable >/dev/null 2>&1 || true
-      ;;
-  esac
+  [ "$DEPLOY_MODE" = "docker" ] || return 0
+  if grep -qE 'restart:[[:space:]]*["'"'"']?no["'"'"']?' "$COMPOSE_FILE" 2>/dev/null; then
+    sed -i -E 's/restart:[[:space:]]*["'"'"']?no["'"'"']?/restart: always/' "$COMPOSE_FILE"
+    info "已恢复 compose 的 restart: always"
+    dc up -d >/dev/null 2>&1 || true
+  fi
 }
 
 # ════════════════════════════════════════════════════════════════════
@@ -651,14 +1301,11 @@ do_upgrade() {
         fail "升级后启动失败"
       fi
       ;;
-    systemd)
-      if [ -x "$XBCTL_PATH" ]; then
-        info "调用 xbctl upgrade ..."
-        "$XBCTL_PATH" upgrade || fail "xbctl upgrade 失败"
-        ok "升级完成"
-      else
-        fail "未找到 $XBCTL_PATH，无法升级 systemd 部署"
-      fi
+    legacy)
+      warn "当前只有 install.sh 部署，txnode 自己的 docker 部署尚未安装"
+      hint "txnode 不会去升级 install.sh 的部署（那是它自己的 ${XBCTL_PATH} 的职责）"
+      hint "如果你想换到 txnode：用菜单「从 install.sh 导入」把它转成 docker 部署"
+      return 0
       ;;
   esac
 
@@ -675,10 +1322,15 @@ do_upgrade() {
 # ════════════════════════════════════════════════════════════════════
 do_reconfigure() {
   detect_deploy_mode
-  if [ "$DEPLOY_MODE" = "systemd" ]; then
-    warn "当前是 systemd 部署，本脚本的配置向导只写 docker 布局"
-    hint "请用: ${BOLD}xbctl bind add-node${NC} / ${BOLD}xbctl bind add-machine${NC} 增删节点"
-    hint "或直接编辑 $CONFIG_FILE 后 systemctl restart $SERVICE_NAME"
+  if [ "$DEPLOY_MODE" = "legacy" ]; then
+    warn "当前只有 install.sh 部署，本脚本的配置向导只写 txnode 的 docker 布局"
+    hint "install.sh 部署请用: ${BOLD}xbctl bind add-node${NC} / ${BOLD}xbctl bind add-machine${NC} 增删节点"
+    hint "或直接编辑 $LEGACY_CONFIG_FILE 后 systemctl restart $SERVICE_NAME"
+    hint "想换到 txnode：用菜单「从 install.sh 导入」把它转成 docker 部署"
+    return 0
+  fi
+  if [ "$DEPLOY_MODE" = "none" ]; then
+    warn "txnode 尚未部署，请先安装（或从 install.sh 导入）"
     return 0
   fi
 
@@ -976,18 +1628,10 @@ nodes_summary() {
 
 do_add_node() {
   detect_deploy_mode
-  if [ "$DEPLOY_MODE" = "systemd" ] && [ -x "$XBCTL_PATH" ]; then
-    info "systemd 部署：调用 xbctl bind add-node"
-    local url tok nid ntype
-    read -r -p "面板地址: " url
-    read -r -s -p "server token（不回显）: " tok; echo
-    read -r -p "node_id: " nid
-    [[ "$nid" =~ ^[0-9]+$ ]] || fail "node_id 必须是正整数"
-    read -r -p "内核 [singbox/xray] (默认 singbox): " ntype
-    ntype="${ntype:-singbox}"
-    "$XBCTL_PATH" bind add-node --panel-url "$url" --token "$tok" --node-id "$nid" --kernel "$ntype" \
-      || fail "xbctl bind add-node 失败"
-    ok "已添加节点 $nid"
+  if [ "$DEPLOY_MODE" = "legacy" ] && [ -x "$XBCTL_PATH" ]; then
+    warn "当前只有 install.sh 部署 —— 增删节点请用 xbctl（txnode 不管它）"
+    hint "命令示例: xbctl bind add-node --panel-url URL --token TOKEN --node-id ID"
+    hint "想换到 txnode：用菜单「从 install.sh 导入」把它转成 docker 部署"
     return 0
   fi
 
@@ -1075,12 +1719,13 @@ do_machine_mode() {
   read -r -p "选择 [1-3]: " c
   case "$c" in
     1)
-      [ "$DEPLOY_MODE" = "systemd" ] && {
-        warn "systemd 部署请用: xbctl bind add-machine --panel-url URL --token TOKEN --machine-id ID"
+      [ "$DEPLOY_MODE" = "legacy" ] && {
+        warn "当前只有 install.sh 部署，请用: xbctl bind add-machine --panel-url URL --token TOKEN --machine-id ID"
         return 0
       }
+      [ "$DEPLOY_MODE" = "docker" ] || { warn "txnode 尚未部署，请先安装或从 install.sh 导入"; return 0; }
       local url mid tok
-      read -r -p "面板地址: " url
+      read -r -p "面板地址: " url || return 0
       url="${url%/}"
       [[ "$url" =~ ^https?:// ]] || fail "面板地址必须以 http:// 或 https:// 开头"
       read -r -p "machine_id: " mid
@@ -1140,12 +1785,10 @@ do_uninstall() {
       # 停用 compose 但保留文件（重装时可直接复用）
       [ -f "$COMPOSE_FILE" ] && mv "$COMPOSE_FILE" "$COMPOSE_FILE.uninstalled" 2>/dev/null || true
       ;;
-    systemd)
-      svc_ctrl stop 2>/dev/null || true
-      svc_ctrl disable 2>/dev/null || true
-      rm -f "$SERVICE_PATH"
-      systemctl daemon-reload || true
-      rm -f "$SB_BINARY"
+    legacy)
+      warn "检测到 install.sh 部署（${SERVICE_NAME}）"
+      hint "txnode 的卸载不会动它 —— 它有自己的卸载入口"
+      hint "若你想连同它一起清掉，请单独执行: xbctl uninstall [--purge]"
       ;;
   esac
 
@@ -1158,10 +1801,11 @@ do_purge() {
   detect_deploy_mode
   title "彻底清除 tx-node"
   echo -e "${RED}  将删除以下内容：${NC}"
-  echo "    - 容器 / systemd 服务"
-  echo "    - 二进制 / compose / 配置 / 备份（$INSTALL_DIR）"
+  echo "    - txnode 容器"
+  echo "    - compose / 配置 / 备份（$INSTALL_DIR）"
   echo "    - 拉取的镜像 $IMAGE"
   echo "    - 快捷命令 $CLI_LINK"
+  echo -e "${DIM}    （install.sh 的 /etc/xboard-node 不在范围内）${NC}"
   if [ "$DEPLOY_MODE" = "none" ]; then
     warn "未检测到部署，但仍会清理残留文件与镜像"
   fi
@@ -1174,12 +1818,9 @@ do_purge() {
     docker)
       dc down -v 2>/dev/null || docker rm -f "$APP_NAME" 2>/dev/null || true
       ;;
-    systemd)
-      svc_ctrl stop 2>/dev/null || true
-      svc_ctrl disable 2>/dev/null || true
-      rm -f "$SERVICE_PATH" "$SB_BINARY" "$XBCTL_PATH" /usr/bin/xbctl 2>/dev/null || true
-      systemctl daemon-reload || true
-      systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
+    legacy)
+      warn "检测到 install.sh 部署 —— txnode 的 purge 不会删除它"
+      hint "如需清理 install.sh 部署，请单独执行: xbctl uninstall --purge"
       ;;
   esac
 
@@ -1313,13 +1954,14 @@ ASCII
       esac
       echo -e "   状态: ${state_color}● ${state_txt}${NC}  ${DIM}(docker · $APP_NAME)${NC}"
       ;;
-    systemd)
+    legacy)
       local sst; sst=$(svc_state)
       case "$sst" in
         active) state_color="$GREEN"; state_txt="运行中" ;;
         *)      state_color="$YELLOW"; state_txt="$sst" ;;
       esac
-      echo -e "   状态: ${state_color}● ${state_txt}${NC}  ${DIM}(systemd · $SERVICE_NAME)${NC}"
+      echo -e "   状态: ${state_color}● ${state_txt}${NC}  ${DIM}(install.sh · $SERVICE_NAME)${NC}"
+      echo -e "   ${YELLOW}检测到 install.sh 部署，可导入为 txnode${NC}"
       ;;
     *)
       echo -e "   状态: ${YELLOW}● 未部署${NC}"
@@ -1346,9 +1988,16 @@ menu() {
       echo -e "   ${BOLD}9${NC}) 备份 / 恢复         ${DIM}配置备份与回滚${NC}"
       echo -e "  ${BOLD}10${NC}) 卸载                ${DIM}保留配置${NC}"
       echo -e "  ${BOLD}11${NC}) 彻底清除            ${RED}${DIM}删除全部数据（不可逆）${NC}"
+      if detect_legacy_install; then
+        echo -e "  ${BOLD}12${NC}) 从 install.sh 导入   ${CYAN}${DIM}检测到 install.sh 部署，可转成 docker${NC}"
+      fi
     else
       echo -e "   ${BOLD}1${NC}) 安装 / 部署         ${DIM}交互式向导${NC}"
-      echo -e "   ${BOLD}2${NC}) 从备份恢复         ${DIM}复用已有配置${NC}"
+      if detect_legacy_install; then
+        echo -e "   ${BOLD}2${NC}) 从 install.sh 导入   ${CYAN}${DIM}提取 install.sh 配置并转成 docker${NC}"
+      else
+        echo -e "   ${BOLD}2${NC}) 从备份恢复         ${DIM}复用已有配置${NC}"
+      fi
       echo -e "   ${BOLD}3${NC}) 诊断                ${DIM}检查环境${NC}"
     fi
     echo -e "   ${BOLD}0${NC}) 退出"
@@ -1360,13 +2009,24 @@ menu() {
     opt="${opt//[[:space:]]/}"   # 容忍误输入的空格
 
     if ! is_installed; then
-      case "$opt" in
-        1) do_install; pause ;;
-        2) do_restore; pause ;;
-        3) do_doctor; pause ;;
-        0) echo; info "再见"; exit 0 ;;
-        *) warn "无效选项"; sleep 1 ;;
-      esac
+      # 有 install.sh 部署时，2 是「导入」；否则是「从备份恢复」
+      if detect_legacy_install; then
+        case "$opt" in
+          1) do_install; pause ;;
+          2) do_migrate_legacy; pause ;;
+          3) do_doctor; pause ;;
+          0) echo; info "再见"; exit 0 ;;
+          *) warn "无效选项"; sleep 1 ;;
+        esac
+      else
+        case "$opt" in
+          1) do_install; pause ;;
+          2) do_restore; pause ;;
+          3) do_doctor; pause ;;
+          0) echo; info "再见"; exit 0 ;;
+          *) warn "无效选项"; sleep 1 ;;
+        esac
+      fi
       continue
     fi
 
@@ -1382,6 +2042,7 @@ menu() {
       9) menu_backup ;;
       10) do_uninstall; pause ;;
       11) do_purge; pause ;;
+      12) do_migrate_legacy; pause ;;
       0) echo; info "再见"; exit 0 ;;
       *) warn "无效选项"; sleep 1 ;;
     esac
@@ -1496,6 +2157,9 @@ usage() {
 
   命令:
     install        安装 / 重新部署（交互式向导）
+    migrate        从 install.sh 部署导入配置并转成 docker 部署
+    migrate --dry-run
+                   只预览将要生成的配置，不写入任何文件
     upgrade        升级到最新镜像并重建
     status         查看运行状态与配置摘要
     start          启动
@@ -1512,9 +2176,16 @@ usage() {
     purge          彻底清除（删除配置、镜像，不可逆）
     help           显示本帮助
 
+  关于 install.sh 导入:
+    txnode 使用独立目录 /etc/txnode，与 install.sh 的 /etc/xboard-node 完全分离，
+    两者可并存。检测到 install.sh 部署时进入面板会自动询问是否导入。
+    转换流程：提取配置 → 启动 txnode → 停止 install.sh 服务（其配置保留可回滚）。
+
   示例:
     bash deploy.sh                       # 进面板
     bash deploy.sh install               # 直接安装
+    bash deploy.sh migrate               # 从 install.sh 导入
+    bash deploy.sh migrate --dry-run     # 只看会生成什么
     bash deploy.sh upgrade               # 直接升级
     bash deploy.sh uninstall             # 卸载
 
@@ -1531,6 +2202,27 @@ main() {
     # 无参数 → 交互面板
     [ "$(id -u)" -eq 0 ] || fail "请用 root 运行（或 sudo bash $0）"
     [ -d /etc ] || fail "仅支持 Linux"
+    detect_deploy_mode
+    # 检测到 install.sh 部署且本机尚无 txnode → 主动询问是否导入
+    if detect_legacy_install && ! is_installed; then
+      clear 2>/dev/null || true
+      banner
+      echo
+      hint "检测到 install.sh 部署（$LEGACY_INSTALL_ROOT / $SERVICE_NAME）"
+      hint "txnode 使用独立目录 $INSTALL_DIR，两者可并存；也可以把它的配置直接导入转换。"
+      echo
+      if confirm "是否现在把 install.sh 部署导入为 txnode（docker）？" "n"; then
+        if do_migrate_legacy; then
+          pause
+        else
+          warn "导入未完成，可稍后在面板里选「从 install.sh 导入」重试"
+          sleep 2
+        fi
+      else
+        hint "已跳过 —— 稍后可在面板里选「从 install.sh 导入」"
+        sleep 1
+      fi
+    fi
     menu
     exit 0
   fi
@@ -1541,12 +2233,21 @@ main() {
 
   shift || true
 
-  # status/doctor 只读，但仍需 root 才能读配置与 systemd
+  # migrate 支持 --dry-run
+  local mig_dry=0
+  if [ "$action" = "migrate" ] || [ "$action" = "import" ]; then
+    case "${1:-}" in
+      --dry-run|-n) mig_dry=1; shift || true ;;
+    esac
+  fi
+
+  # status/doctor 只读，但仍需 root 才能读配置与 systemd 状态
   [ "$(id -u)" -eq 0 ] || fail "请用 root 运行（或 sudo bash $0 $action）"
   [ -d /etc ] || fail "仅支持 Linux"
 
   case "$action" in
     install)     do_install ;;
+    migrate|import) do_migrate_legacy "$mig_dry" ;;
     upgrade)     do_upgrade ;;
     status)      do_status ;;
     start)       do_start ;;

@@ -2,7 +2,7 @@
   "name": "访问审计",
   "code": "access_audit",
   "type": "feature",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "节点访问审计：访问日志、规则命中、自动封禁、TG 告警、节点健康监控、数据分析与面板内设置",
   "author": "Hermes",
   "admin_menus": [

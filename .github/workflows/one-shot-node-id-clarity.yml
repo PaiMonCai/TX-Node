@@ -22,42 +22,14 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
           path = Path('panel-plugin/AccessAudit/resources/views/admin.blade.php')
           text = path.read_text(encoding='utf-8')
 
-          old_css = '''    /* 节点名前的色块：按 node_id 稳定取色，扫表时靠颜色快速分区 */
-    .aa-nodecell { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
-    .aa-nodebar { width: 4px; height: 15px; border-radius: 2px; flex: none; }
-    .aa-nodeid { font-size: 11px; color: var(--aa-text-3); font-family: ui-monospace, monospace; }'''
-          new_css = '''    /* 节点显示：节点 ID 仅用于识别，不再用随机颜色表达状态 */
-    .aa-nodecell { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
-    .aa-nodeid {
-      display: inline-flex; align-items: center;
-      padding: 1px 6px;
-      border: 1px solid var(--aa-line);
-      border-radius: 999px;
-      background: var(--aa-gray-soft);
-      font-size: 11px; line-height: 1.5;
-      color: var(--aa-text-3);
-      font-family: ui-monospace, monospace;
-    }'''
+          old_css = "    /* 节点名前的色块：按 node_id 稳定取色，扫表时靠颜色快速分区 */\n    .aa-nodecell { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }\n    .aa-nodebar { width: 4px; height: 15px; border-radius: 2px; flex: none; }\n    .aa-nodeid { font-size: 11px; color: var(--aa-text-3); font-family: ui-monospace, monospace; }"
+          new_css = "    /* 节点显示：节点 ID 仅用于识别，不再用随机颜色表达状态 */\n    .aa-nodecell { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }\n    .aa-nodeid {\n      display: inline-flex; align-items: center;\n      padding: 1px 6px;\n      border: 1px solid var(--aa-line);\n      border-radius: 999px;\n      background: var(--aa-gray-soft);\n      font-size: 11px; line-height: 1.5;\n      color: var(--aa-text-3);\n      font-family: ui-monospace, monospace;\n    }"
 
-          old_js = '''/* 节点色块：按 node_id 稳定取一个色，扫表时靠颜色区分节点 */
-const NODE_COLORS = ['#378ADD', '#1D9E75', '#EF9F27', '#D4537E', '#7F77DD', '#D85A30', '#639922', '#BA7517'];
-function nodeColor(id) {
-  const n = parseInt(id, 10);
-  return NODE_COLORS[(isNaN(n) ? 0 : n) % NODE_COLORS.length];
-}
-function nodeCell(id, name) {
-  return `<span class=\"aa-nodecell\"><i class=\"aa-nodebar\" style=\"background:${nodeColor(id)}\"></i>`
-    + `<span>${esc(name)}</span><span class=\"aa-nodeid\">#${esc(id)}</span></span>`;
-}'''
-          new_js = '''/* 节点 ID 只用于识别节点；不使用颜色表达在线、异常或风险状态 */
-function nodeCell(id, name) {
-  return `<span class=\"aa-nodecell\">`
-    + `<span>${esc(name)}</span><span class=\"aa-nodeid\" title=\"节点 ID，仅用于识别，不代表在线、异常或风险状态\">#${esc(id)}</span></span>`;
-}'''
+          old_js = "/* 节点色块：按 node_id 稳定取一个色，扫表时靠颜色区分节点 */\nconst NODE_COLORS = ['#378ADD', '#1D9E75', '#EF9F27', '#D4537E', '#7F77DD', '#D85A30', '#639922', '#BA7517'];\nfunction nodeColor(id) {\n  const n = parseInt(id, 10);\n  return NODE_COLORS[(isNaN(n) ? 0 : n) % NODE_COLORS.length];\n}\nfunction nodeCell(id, name) {\n  return `<span class=\"aa-nodecell\"><i class=\"aa-nodebar\" style=\"background:${nodeColor(id)}\"></i>`\n    + `<span>${esc(name)}</span><span class=\"aa-nodeid\">#${esc(id)}</span></span>`;\n}"
+          new_js = "/* 节点 ID 只用于识别节点；不使用颜色表达在线、异常或风险状态 */\nfunction nodeCell(id, name) {\n  return `<span class=\"aa-nodecell\">`\n    + `<span>${esc(name)}</span><span class=\"aa-nodeid\" title=\"节点 ID，仅用于识别，不代表在线、异常或风险状态\">#${esc(id)}</span></span>`;\n}"
 
           if text.count(old_css) != 1:
               raise SystemExit(f'expected CSS block once, found {text.count(old_css)}')

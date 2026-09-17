@@ -560,16 +560,17 @@ EOF
   echo
   local i=0
   while [ "$i" -lt "$n" ]; do
-    local it="${items[$i]}"
-    local kind key label count mix
-    IFS=$'\037' read -r kind key label count mix <<EOF
-$it
+    # ⚠️ 字段变量一律加前缀：本函数靠 printf -v 回传 key，
+    #    任何叫 key 的 local 都会把回传目标劫持成局部变量（见下方 n -eq 1 分支注释）。
+    local d_kind d_key d_label d_count d_mix
+    IFS=$'\037' read -r d_kind d_key d_label d_count d_mix <<EOF
+${items[$i]}
 EOF
     local kind_txt="节点"
-    [ "$kind" = "machine" ] && kind_txt="机器"
+    [ "$d_kind" = "machine" ] && kind_txt="机器"
     local warn_txt=""
-    [ "${mix:-}" = "MIX" ] && warn_txt="  ${RED}⚠ 组内 token 不一致，无法合并${NC}"
-    echo -e "   ${BOLD}$((i+1))${NC}) [${kind_txt}] ${label}  ${DIM}${count} 个实例${NC}${warn_txt}"
+    [ "${d_mix:-}" = "MIX" ] && warn_txt="  ${RED}⚠ 组内 token 不一致，无法合并${NC}"
+    echo -e "   ${BOLD}$((i+1))${NC}) [${kind_txt}] ${d_label}  ${DIM}${d_count} 个实例${NC}${warn_txt}"
     i=$((i+1))
   done
   echo
@@ -577,20 +578,24 @@ EOF
   echo
 
   if [ "$n" -eq 1 ]; then
-    # 只有一个候选，直接确认
-    local only="${items[0]}"
-    local kind key label count mix
-    IFS=$'\037' read -r kind key label count mix <<EOF
-$only
+    # 只有一个候选，直接确认。
+    # ⚠️ 这里的字段变量必须加前缀（cf_*），不能叫 key：调用方是用
+    #    `local key; mig_pick_group key` 的形式回传的，而 printf -v "$__out"
+    #    解析的是**本函数作用域**里的同名变量。一旦此处 local 出 `key`，
+    #    printf -v 就会写进这个局部变量、函数返回即销毁，调用方的 key
+    #    仍是未赋值 —— 在 set -u 下直接 "key: unbound variable"。
+    local cf_kind2 cf_key cf_label cf_count cf_mix
+    IFS=$'\037' read -r cf_kind2 cf_key cf_label cf_count cf_mix <<EOF
+${items[0]}
 EOF
-    if [ "${mix:-}" = "MIX" ]; then
+    if [ "${cf_mix:-}" = "MIX" ]; then
       fail "唯一的候选组内部 token 不一致，无法自动合并。请先在 install.sh 部署里统一 token，或手工迁移"
     fi
-    if ! confirm "只有一组可导入（$label），用它转换？" "Y"; then
+    if ! confirm "只有一组可导入（${cf_label:-}），用它转换？" "Y"; then
       info "已取消"
       return 1
     fi
-    printf -v "$__out" '%s' "$key"
+    printf -v "$__out" '%s' "$cf_key"
     return 0
   fi
 
@@ -780,9 +785,13 @@ EOF
 
   echo
   echo -e "${BOLD}即将执行：${NC}"
-  echo "   1) 写入 $CONFIG_FILE 与 $COMPOSE_FILE"
-  echo "   2) 拉取镜像并启动 txnode 容器（端口错开，可与 install.sh 并存）"
-  echo "   3) 启动成功后停止 install.sh 服务，并备份其配置到 txnode 备份目录"
+  echo "   1) 备份 install.sh 的配置到 $BACKUP_DIR（可回滚）"
+  echo "   2) 写入 $CONFIG_FILE 与 $COMPOSE_FILE"
+  echo "   3) 停止 ${SERVICE_NAME}（避免与 txnode 抢同一 machine_id / 同一批节点）"
+  echo "   4) 拉取镜像并启动 txnode"
+  echo
+  echo -e "   ${DIM}若 txnode 启动失败会自动回滚（重新拉起 ${SERVICE_NAME}）。${NC}"
+  echo -e "   ${DIM}install.sh 的配置不会被删除，随时可切回。${NC}"
   if ! confirm "确认转换？" "Y"; then
     info "已取消，未做任何改动"
     return 1
@@ -822,44 +831,72 @@ EOF
     return 1
   fi
 
+  # 先停 install.sh 侧，再起 txnode：
+  # machine 模式下两边会用同一个 machine_id 连面板，若同时在线，
+  # 面板会看到重复的机器连接，且 txnode 若启动失败会留下"两套都在跑"的
+  # 混乱状态。先停机可以把冲突窗口压到零；失败则自动回滚（重新拉起 legacy）。
+  local legacy_was_active="false"
+  if [ "$(svc_state)" = "active" ]; then
+    legacy_was_active="true"
+    info "先停止 ${SERVICE_NAME}（避免与 txnode 抢同一 machine_id / 同一批节点）"
+    systemctl stop "$SERVICE_NAME" 2>/dev/null || warn "停止失败，仍继续尝试启动 txnode"
+  fi
+
   info "启动 txnode..."
   if ! dc up -d; then
-    fail "启动失败，配置已保留。排查：txnode logs"
+    warn "txnode 启动命令失败"
+    if [ "$legacy_was_active" = "true" ]; then
+      info "回滚：重新拉起 ${SERVICE_NAME}"
+      systemctl start "$SERVICE_NAME" 2>/dev/null || warn "回滚失败，请手动执行: systemctl start $SERVICE_NAME"
+    fi
+    fail "启动失败（配置已保留）。排查：txnode logs"
   fi
 
   sleep 5
   if ! docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -q "$APP_NAME.*Up"; then
     warn "容器未正常运行，最近日志："
     show_logs 20
-    warn "配置已保留，未动 install.sh 侧。排查后可重试。"
+    if [ "$legacy_was_active" = "true" ]; then
+      info "回滚：重新拉起 ${SERVICE_NAME}，并停掉未健康的 txnode"
+      dc down 2>/dev/null || true
+      systemctl start "$SERVICE_NAME" 2>/dev/null || warn "回滚失败，请手动执行: systemctl start $SERVICE_NAME"
+      warn "已回滚到 install.sh 部署。配置保留在 $CONFIG_FILE，排查后可重试。"
+    else
+      warn "配置已保留，未动 install.sh 侧。排查后可重试。"
+    fi
     return 1
   fi
   ok "txnode 容器运行中"
 
   install_cli_link
-  mig_stop_legacy
+  mig_finish_legacy "$legacy_was_active"
   return 0
 }
 
-# 转换成功后：停掉 install.sh 服务（配置已在快照里，可回滚）
+# 转换成功后：确认 install.sh 侧处于停止状态（配置已在快照里，可回滚）
 # 默认保留其配置，不删除 —— 用户确认「先停服务，备份后清除」
-mig_stop_legacy() {
+mig_finish_legacy() {
+  local was_active="${1:-false}"
   echo
   title "处理 install.sh 侧"
   local sst; sst=$(svc_state)
   if [ "$sst" = "absent" ]; then
-    hint "未发现 systemd 服务，跳过停止"
-  else
-    info "停止并禁用 ${SERVICE_NAME}（防止它与 txnode 抢同一批节点）"
-    systemctl stop "$SERVICE_NAME" 2>/dev/null || warn "停止失败，请手动检查"
-    systemctl disable "$SERVICE_NAME" 2>/dev/null || true
-    ok "${SERVICE_NAME} 已停止并取消开机自启"
+    hint "未发现 systemd 服务，跳过"
+    return 0
   fi
+  if [ "$sst" = "active" ]; then
+    # 正常路径上前面已停过；能走到这里说明当时停止失败
+    info "停止并禁用 ${SERVICE_NAME}"
+    systemctl stop "$SERVICE_NAME" 2>/dev/null || warn "停止失败，请手动检查"
+  fi
+  systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+  ok "${SERVICE_NAME} 已停止且不再开机自启"
 
   echo
   hint "install.sh 的配置（$LEGACY_INSTALL_ROOT）**保留未删**，以便随时回滚。"
-  hint "确认 txnode 稳定运行后，可执行: rm -rf $LEGACY_INSTALL_ROOT $SERVICE_PATH $SB_BINARY $XBCTL_PATH"
-  echo -e "   ${DIM}或稍后用本脚本的「清理 install.sh 残留」完成。${NC}"
+  hint "如需回滚：systemctl enable --now $SERVICE_NAME && systemctl stop $APP_NAME"
+  hint "确认 txnode 稳定运行后，可删除残留:"
+  echo -e "   ${DIM}rm -rf $LEGACY_INSTALL_ROOT $SERVICE_PATH $SB_BINARY $XBCTL_PATH${NC}"
 }
 
 # 遮蔽 token 用于展示

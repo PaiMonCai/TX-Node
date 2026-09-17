@@ -82,9 +82,21 @@ bash deploy.sh migrate --dry-run    # 只预览会生成什么，不写任何文
    注意 `install.sh` 的密钥不落在 `config.yml` 里——它用 `token_env` 指向 `credentials.env` 中的变量名（由 systemd 注入），
    所以导入时必须把 `token_env` **解析成真实 token**。
 2. **合并**：`install.sh` 是「多实例」结构（顶层 `instances:` 列表），txnode 是单份配置，按下面的规则智能归并。
-3. **启动**：写入 `/etc/txnode` 并拉起容器（端口错开，此时两套并存）。
-4. **收尾**：容器确认运行后，**停止并禁用** `xboard-node.service`，避免两套抢同一批节点。
-   `install.sh` 的配置**保留不删**，随时可回滚；确认稳定后按提示自行清理。
+3. **备份 + 写盘**：先把 `install.sh` 的三个文件快照到 `/etc/txnode/backups/legacy-source.<时间戳>/`，再写入新配置。
+4. **切换**：先**停止** `xboard-node.service`，再启动 txnode。
+
+第 4 步的顺序是刻意的：`machine` 模式下两边会用**同一个 `machine_id`** 连面板，若同时在线，
+面板会看到重复的机器连接；且先起后停会留下「两套都在跑」的混乱状态。
+先停可以把冲突窗口压到零，**若 txnode 启动失败会自动回滚**（重新拉起 `xboard-node.service`）。
+
+`install.sh` 的配置**保留不删**，随时可切回：
+
+```bash
+systemctl enable --now xboard-node.service   # 切回 install.sh 部署
+systemctl stop tx-node                       # 停掉 txnode
+```
+
+确认 txnode 稳定后再删残留（脚本会在结束时打印这行提示）。
 
 **合并规则**（受限于 txnode 配置模型）：
 

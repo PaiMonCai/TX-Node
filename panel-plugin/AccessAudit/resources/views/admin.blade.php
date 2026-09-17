@@ -260,10 +260,18 @@
       max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       display: inline-block; vertical-align: middle;
     }
-    /* 节点名前的色块：按 node_id 稳定取色，扫表时靠颜色快速分区 */
+    /* 节点显示：节点 ID 仅用于识别，不再用随机颜色表达状态 */
     .aa-nodecell { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
-    .aa-nodebar { width: 4px; height: 15px; border-radius: 2px; flex: none; }
-    .aa-nodeid { font-size: 11px; color: var(--aa-text-3); font-family: ui-monospace, monospace; }
+    .aa-nodeid {
+      display: inline-flex; align-items: center;
+      padding: 1px 6px;
+      border: 1px solid var(--aa-line);
+      border-radius: 999px;
+      background: var(--aa-gray-soft);
+      font-size: 11px; line-height: 1.5;
+      color: var(--aa-text-3);
+      font-family: ui-monospace, monospace;
+    }
     .aa-actions { display: flex; gap: 6px; white-space: nowrap; }
 
     /* 表格列宽策略：状态/操作这类短列收窄，把宽度让给时间与目标 */
@@ -727,15 +735,10 @@ function showMsg(id, text, ok) {
   setTimeout(() => { el.className = 'aa-msg'; }, 4000);
 }
 
-/* 节点色块：按 node_id 稳定取一个色，扫表时靠颜色区分节点 */
-const NODE_COLORS = ['#378ADD', '#1D9E75', '#EF9F27', '#D4537E', '#7F77DD', '#D85A30', '#639922', '#BA7517'];
-function nodeColor(id) {
-  const n = parseInt(id, 10);
-  return NODE_COLORS[(isNaN(n) ? 0 : n) % NODE_COLORS.length];
-}
+/* 节点 ID 只用于识别节点；不使用颜色表达在线、异常或风险状态 */
 function nodeCell(id, name) {
-  return `<span class="aa-nodecell"><i class="aa-nodebar" style="background:${nodeColor(id)}"></i>`
-    + `<span>${esc(name)}</span><span class="aa-nodeid">#${esc(id)}</span></span>`;
+  return `<span class="aa-nodecell">`
+    + `<span>${esc(name)}</span><span class="aa-nodeid" title="节点 ID，仅用于识别，不代表在线、异常或风险状态">#${esc(id)}</span></span>`;
 }
 
 async function api(url, payload) {

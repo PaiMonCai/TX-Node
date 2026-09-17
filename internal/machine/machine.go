@@ -219,7 +219,7 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 		}
 	}
 
-	// The registerFn is called by MachinePanelControlPlane.Initial() to expose
+	// The registerFn is called by MachineXboardControlPlane.Initial() to expose
 	// the node mailbox + status channel to the Service.
 	nodeID := mn.ID
 	registerFn := func(st chan<- controlplane.StatusChange) *controlplane.NodeMailbox {
@@ -227,7 +227,7 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 		return mb
 	}
 
-	cp := controlplane.NewMachinePanelControlPlane(perNodeClient, nodeCfg.Kernel, push, registerFn)
+	cp := controlplane.NewMachineXboardControlPlane(perNodeClient, nodeCfg.Kernel, push, registerFn)
 	svc := service.NewWithControlPlane(nodeCfg, cp)
 
 	nlog.Core().Info(fmt.Sprintf("machine: starting node %d (%s/%s)",

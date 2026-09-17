@@ -184,7 +184,7 @@ require (
 	github.com/sagernet/cronet-go/lib/linux_mips64le v0.0.0-20260309101654-0cbdcfddded9 // indirect
 	github.com/sagernet/cronet-go/lib/linux_mipsle v0.0.0-20260309101654-0cbdcfddded9 // indirect
 	github.com/sagernet/cronet-go/lib/linux_mipsle_musl v0.0.0-20260309101654-0cbdcfddded9 // indirect
-	github.com/sagernet/cronet-go/lib/linux_riscv64 v0.0.0-20260309101654-0cbdcfddded9 // indirect
+	github.com/sagernet/cronet-go/lib/linux_riscv64 v0.0.0-20260309101654-5485872f601f // indirect
 	github.com/sagernet/cronet-go/lib/linux_riscv64_musl v0.0.0-20260309101654-0cbdcfddded9 // indirect
 	github.com/sagernet/cronet-go/lib/tvos_amd64_simulator v0.0.0-20260309101654-0cbdcfddded9 // indirect
 	github.com/sagernet/cronet-go/lib/tvos_arm64 v0.0.0-20260309101654-0cbdcfddded9 // indirect
@@ -261,6 +261,6 @@ require (
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
 
-replace github.com/sagernet/sing-box => github.com/PaiMonCai/sing-box v1.14.0-alpha.2.0.20260316103356-2e665cb7e295
+replace github.com/sagernet/sing-box => github.com/PaiMonCai/sing-box v1.14.0-alpha.2.0.20260917142517-0598e0a355ce
 
 replace github.com/xtls/xray-core => github.com/PaiMonCai/Xray-core v0.0.0-20260409213332-f47935539965
